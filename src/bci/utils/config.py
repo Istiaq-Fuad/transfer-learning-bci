@@ -85,7 +85,6 @@ class ModelConfig:
     # ViT branch
     vit_model_name: str = "vit_tiny_patch16_224"
     vit_pretrained: bool = True
-    vit_feature_dim: int = 192
     vit_drop_rate: float = 0.1
 
     # Math branch
@@ -111,13 +110,10 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     batch_size: int = 32
     epochs: int = 100
-    optimizer: str = "adamw"
-    scheduler: str = "cosine"
     warmup_epochs: int = 5
 
     # Regularization
     label_smoothing: float = 0.1
-    mixup_alpha: float = 0.0
 
     # Early stopping
     patience: int = 15
@@ -137,7 +133,6 @@ class TrainingConfig:
     # Logging
     log_dir: str = str(OUTPUTS_DIR / "runs")
     checkpoint_dir: str = str(CHECKPOINTS_DIR)
-    save_every_n_epochs: int = 10
 
 
 @dataclass

@@ -61,7 +61,7 @@ class TestViTPretraining:
         from bci.models.vit_branch import ViTBranch
         from bci.utils.config import ModelConfig
 
-        cfg = ModelConfig(vit_pretrained=False, vit_feature_dim=192)
+        cfg = ModelConfig(vit_pretrained=False)
         model = ViTBranch(config=cfg, as_feature_extractor=True)
         imgs = torch.rand(4, 3, 224, 224)
         out = model(imgs)

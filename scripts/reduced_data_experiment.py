@@ -47,7 +47,6 @@ from torch.utils.data import DataLoader
 from bci.data.dual_branch_builder import DualBranchFoldBuilder
 from bci.models.dual_branch import DualBranchModel
 from bci.training.cross_validation import (
-    FoldResult,
     make_synthetic_subject_data,
 )
 from bci.training.evaluation import compute_metrics

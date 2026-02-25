@@ -24,26 +24,32 @@
     },
     "riemannian": {
       "model": "Baseline B: Riemannian+LDA",
-      "within_acc": 100.0,
-      "within_std": 0.0,
-      "within_kappa": 1.0,
-      "within_f1": 1.0,
-      "loso_acc": 100.0,
-      "loso_std": 0.0,
-      "loso_kappa": 1.0,
-      "loso_f1": 1.0,
+      "within_acc": 61.65087047119714,
+      "within_std": 9.409083089913091,
+      "within_kappa": 0.2331410567713716,
+      "within_f1": 0.6144452568212435,
+      "loso_acc": 63.8503086419753,
+      "loso_std": 11.138137997261015,
+      "loso_kappa": 0.2770061728395062,
+      "loso_f1": 0.6021601565161422,
       "loso_per_subject": {
-        "1": 100.0,
-        "2": 100.0,
-        "3": 100.0
+        "1": 77.77777777777779,
+        "2": 50.69444444444444,
+        "3": 80.90277777777779,
+        "4": 53.125,
+        "5": 50.34722222222222,
+        "6": 60.06944444444444,
+        "7": 59.375,
+        "8": 74.30555555555556,
+        "9": 68.05555555555556
       }
     },
     "vit_only": {
       "model": "Baseline C: CWT+ViT-Tiny",
-      "within_acc": 51.388888888888886,
-      "within_std": 1.3888888888888893,
-      "within_kappa": 0.02777777777777779,
-      "within_f1": 0.36279377689506787,
+      "within_acc": 52.578476843449614,
+      "within_std": 8.104883159799977,
+      "within_kappa": 0.05173127435941686,
+      "within_f1": 0.5086496631160176,
       "loso_acc": null,
       "loso_std": null,
       "loso_kappa": null,
@@ -55,16 +61,16 @@
     "attention": {
       "model": "DualBranch-ViT+CSP+Riemann [attention]",
       "strategy": "within_subject",
-      "within_acc": 61.111111111111114,
-      "within_std": 2.777777777777775,
-      "within_kappa": 0.2222222222222222,
-      "within_f1": 0.5447741596638656,
+      "within_acc": 100.0,
+      "within_std": 0.0,
+      "within_kappa": 1.0,
+      "within_f1": 1.0,
       "loso_acc": null,
       "loso_std": null,
       "loso_kappa": null,
       "loso_f1": null,
       "per_subject": {
-        "1": 61.111111111111114
+        "1": 100.0
       }
     },
     "concat": {

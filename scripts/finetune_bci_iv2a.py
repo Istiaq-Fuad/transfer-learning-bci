@@ -51,7 +51,7 @@ from bci.training.cross_validation import (
 )
 from bci.training.evaluation import compute_metrics
 from bci.training.trainer import Trainer
-from bci.utils.config import ModelConfig, SpectrogramConfig
+from bci.utils.config import ModelConfig
 from bci.utils.seed import get_device, set_seed
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

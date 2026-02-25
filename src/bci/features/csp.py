@@ -41,7 +41,7 @@ class CSPFeatureExtractor(BaseEstimator, TransformerMixin):
         csp = CSPFeatureExtractor(n_components=6)
         csp.fit(X_train, y_train)
         features = csp.transform(X_test)
-        # features.shape == (n_trials, 12)
+        # features.shape == (n_trials, 6)
     """
 
     def __init__(
@@ -96,7 +96,7 @@ class CSPFeatureExtractor(BaseEstimator, TransformerMixin):
             X: EEG epoch data of shape (n_trials, n_channels, n_times).
 
         Returns:
-            Feature matrix of shape (n_trials, 2 * n_components).
+            Feature matrix of shape (n_trials, n_components).
             If log=True, these are log-variance features.
         """
         if not self._is_fitted:

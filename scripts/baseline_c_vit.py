@@ -41,7 +41,6 @@ from bci.data.transforms import CWTSpectrogramTransform
 from bci.models.vit_branch import ViTBranch
 from bci.training.cross_validation import (
     CVResult,
-    FoldResult,
     make_synthetic_subject_data,
     within_subject_cv_all,
 )

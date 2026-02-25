@@ -20,7 +20,7 @@ import numpy as np
 from moabb.datasets import BNCI2014_001, PhysionetMI
 from moabb.paradigms import LeftRightImagery
 
-from bci.utils.config import DATA_DIR, DatasetConfig, load_config
+from bci.utils.config import DATA_DIR, DatasetConfig
 
 logger = logging.getLogger(__name__)
 

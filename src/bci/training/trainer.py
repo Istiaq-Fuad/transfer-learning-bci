@@ -22,6 +22,7 @@ from typing import Callable
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import accuracy_score, cohen_kappa_score
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -49,12 +50,14 @@ class TrainResult:
     best_val_accuracy: float
     best_epoch: int
     final_epoch: int
+    max_epochs: int
     history: list[EpochResult] = field(repr=False)
     best_checkpoint_path: str | None = None
 
     @property
     def stopped_early(self) -> bool:
-        return self.final_epoch < self.history[-1].epoch if self.history else False
+        """True if training stopped before reaching max_epochs."""
+        return self.final_epoch < self.max_epochs
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +202,6 @@ class Trainer:
         Returns:
             (loss, accuracy_percent, kappa)
         """
-        from sklearn.metrics import accuracy_score, cohen_kappa_score
-
         self.model.eval()
         total_loss = 0.0
         n = 0
@@ -322,6 +323,7 @@ class Trainer:
             best_val_accuracy=best_val_acc,
             best_epoch=best_epoch,
             final_epoch=history[-1].epoch,
+            max_epochs=self.epochs,
             history=history,
             best_checkpoint_path=best_ckpt_path,
         )
