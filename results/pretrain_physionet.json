@@ -1,0 +1,13 @@
+{
+  "phase": "pretrain",
+  "source": "synthetic",
+  "n_subjects": 5,
+  "val_accuracy": 55.55555555555556,
+  "val_kappa": 0.12224856078564184,
+  "val_f1": 0.5,
+  "n_source_trials": 720,
+  "n_train": 612,
+  "n_val": 108,
+  "elapsed_s": 434.0,
+  "checkpoint": "checkpoints/vit_pretrained_physionet.pt"
+}

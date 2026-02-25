@@ -1,0 +1,76 @@
+# Default experiment configuration for BCI MI-EEG Classification
+name: "default"
+description: "Baseline experiment with BCI IV-2a, L/R hand MI, ViT-Tiny"
+
+dataset:
+  name: "bci_iv2a"
+  subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  classes: ["left_hand", "right_hand"]
+  channels:
+    - FC5
+    - FC3
+    - FC1
+    - FC2
+    - FC4
+    - FC6
+    - C5
+    - C3
+    - C1
+    - Cz
+    - C2
+    - C4
+    - C6
+    - CP5
+    - CP3
+    - CP1
+    - CPz
+    - CP2
+    - CP4
+
+preprocessing:
+  l_freq: 4.0
+  h_freq: 40.0
+  notch_freq: 50.0
+  apply_ica: true
+  ica_method: "fastica"
+  tmin: 0.0
+  tmax: 4.0
+  resample_freq: 128.0
+  normalize: true
+
+spectrogram:
+  wavelet: "morl"
+  freq_min: 4.0
+  freq_max: 40.0
+  n_freqs: 64
+  image_size: [224, 224]
+  channel_mode: "rgb_c3_cz_c4"
+
+model:
+  vit_model_name: "vit_tiny_patch16_224"
+  vit_pretrained: true
+  vit_feature_dim: 192
+  vit_drop_rate: 0.1
+  csp_n_components: 6
+  math_hidden_dims: [256, 128]
+  math_drop_rate: 0.3
+  fusion_method: "attention"
+  fused_dim: 128
+  classifier_hidden_dim: 64
+  n_classes: 2
+
+training:
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  batch_size: 32
+  epochs: 100
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  label_smoothing: 0.1
+  patience: 15
+  seed: 42
+  device: "auto"
+  num_workers: 4
+  eval_strategy: "cross_subject"
+  n_folds: 5

@@ -1,0 +1,15 @@
+{
+  "model": "DualBranch-Transfer-scratch",
+  "condition": "scratch",
+  "strategy": "within_subject",
+  "mean_accuracy": 83.7962962962963,
+  "std_accuracy": 22.92251141329098,
+  "mean_kappa": 0.6759259259259259,
+  "mean_f1": 0.7877099634846113,
+  "n_folds": 9,
+  "per_subject": {
+    "1": 100.0,
+    "2": 68.05555555555556,
+    "3": 83.33333333333333
+  }
+}

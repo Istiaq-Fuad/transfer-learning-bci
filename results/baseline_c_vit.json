@@ -1,0 +1,10 @@
+{
+  "model": "CWT+ViT-Tiny",
+  "within_subject": {
+    "mean_accuracy": 51.388888888888886,
+    "std_accuracy": 1.3888888888888893,
+    "mean_kappa": 0.02777777777777779,
+    "mean_f1": 0.36279377689506787,
+    "n_folds": 2
+  }
+}

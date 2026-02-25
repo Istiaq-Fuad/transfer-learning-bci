@@ -1,0 +1,22 @@
+{
+  "model": "Riemannian+LDA",
+  "within_subject": {
+    "mean_accuracy": 100.0,
+    "std_accuracy": 0.0,
+    "mean_kappa": 1.0,
+    "mean_f1": 1.0,
+    "n_folds": 15
+  },
+  "loso": {
+    "mean_accuracy": 100.0,
+    "std_accuracy": 0.0,
+    "mean_kappa": 1.0,
+    "mean_f1": 1.0,
+    "n_folds": 3,
+    "per_subject": {
+      "1": 100.0,
+      "2": 100.0,
+      "3": 100.0
+    }
+  }
+}

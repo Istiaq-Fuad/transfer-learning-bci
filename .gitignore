@@ -8,3 +8,53 @@ wheels/
 
 # Virtual environments
 .venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# EEG Data (large files - do not commit)
+data/raw/
+data/processed/
+data/spectrograms/
+*.fif
+*.edf
+*.bdf
+*.gdf
+*.set
+*.fdt
+
+# MOABB cache
+~/mne_data/
+mne_data/
+
+# Model checkpoints & outputs
+checkpoints/
+outputs/
+runs/
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment artifacts
+*.npy
+*.npz
+*.pt
+*.pth
+*.onnx
+*.pkl
+
+# Logs
+logs/
+*.log
+
+# LibreOffice lock files
+.~lock.*

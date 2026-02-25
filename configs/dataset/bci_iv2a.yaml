@@ -1,0 +1,18 @@
+# BCI Competition IV-2a Dataset config
+name: "bci_iv2a_baseline"
+description: "BCI IV-2a baseline with CSP+LDA (Phase 1)"
+
+dataset:
+  name: "bci_iv2a"
+  subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  classes: ["left_hand", "right_hand"]
+
+preprocessing:
+  l_freq: 8.0
+  h_freq: 30.0
+  notch_freq: 50.0
+  apply_ica: false  # Simpler baseline without ICA
+  tmin: 0.5
+  tmax: 3.5
+  resample_freq: 128.0
+  normalize: true

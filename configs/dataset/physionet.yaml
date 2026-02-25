@@ -1,0 +1,39 @@
+# PhysioNet Motor Movement/Imagery Dataset config
+name: "physionet_mi"
+description: "PhysioNet MMIDB for pre-training / multi-source transfer learning"
+
+dataset:
+  name: "physionet"
+  subjects: null  # null = all 109 subjects
+  classes: ["left_hand", "right_hand"]
+  channels:
+    - FC5
+    - FC3
+    - FC1
+    - FC2
+    - FC4
+    - FC6
+    - C5
+    - C3
+    - C1
+    - Cz
+    - C2
+    - C4
+    - C6
+    - CP5
+    - CP3
+    - CP1
+    - CPz
+    - CP2
+    - CP4
+
+preprocessing:
+  l_freq: 4.0
+  h_freq: 40.0
+  notch_freq: 60.0  # US dataset uses 60Hz power line
+  apply_ica: true
+  ica_method: "fastica"
+  tmin: 0.0
+  tmax: 4.0
+  resample_freq: 128.0
+  normalize: true
