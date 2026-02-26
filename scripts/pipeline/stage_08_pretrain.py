@@ -1,0 +1,206 @@
+"""Stage 8 – Pretrain ViT on PhysioNet MMIDB.
+
+Trains the ViT-Tiny branch as a standalone classifier on pooled PhysioNet
+Left/Right Motor Imagery data. Saves the resulting weights as a checkpoint
+for use in Stages 9 and 10.
+
+Output:
+  <run-dir>/checkpoints/vit_pretrained_physionet.pt
+  <run-dir>/results/real_pretrain_physionet.json
+
+Usage::
+
+    uv run python scripts/pipeline/stage_08_pretrain.py --run-dir runs/my_run
+    uv run python scripts/pipeline/stage_08_pretrain.py --run-dir runs/my_run \\
+        --n-subjects 109 --epochs 50 --batch-size 32 --device cuda
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Stage 8: Pretrain ViT on PhysioNet MMIDB.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--run-dir",     required=True)
+    p.add_argument("--device",      default="auto")
+    p.add_argument("--epochs",      type=int, default=50)
+    p.add_argument("--batch-size",  type=int, default=32)
+    p.add_argument("--seed",        type=int, default=42)
+    p.add_argument("--n-subjects",  type=int, default=None,
+                   help="Number of PhysioNet subjects to use (default: all 109)")
+    return p.parse_args()
+
+
+def setup_logging(run_dir: Path) -> logging.Logger:
+    fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
+    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
+                        stream=sys.stdout)
+    for lib in ("mne", "pyriemann", "timm", "matplotlib", "moabb"):
+        logging.getLogger(lib).setLevel(logging.ERROR)
+    log = logging.getLogger("stage_08")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(run_dir / "stage_08_pretrain.log")
+    fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
+    log.addHandler(fh)
+    return log
+
+
+def main() -> None:
+    args = parse_args()
+    run_dir = Path(args.run_dir)
+    log = setup_logging(run_dir)
+
+    checkpoint_path = run_dir / "checkpoints" / "vit_pretrained_physionet.pt"
+    out_path        = run_dir / "results"     / "real_pretrain_physionet.json"
+
+    if checkpoint_path.exists() and out_path.exists():
+        log.info("Checkpoint and results already exist – skipping Stage 8.")
+        return
+
+    import mne
+    import torch
+    from moabb.datasets import PhysionetMI
+    from moabb.paradigms import LeftRightImagery
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from bci.data.transforms import CWTSpectrogramTransform
+    from bci.models.vit_branch import ViTBranch
+    from bci.training.evaluation import compute_metrics
+    from bci.training.trainer import Trainer
+    from bci.utils.config import ModelConfig, SpectrogramConfig
+    from bci.utils.seed import get_device, set_seed
+
+    mne.set_log_level("ERROR")
+    device = get_device(args.device)
+    log.info("Device: %s", device)
+    set_seed(args.seed)
+
+    # ── Load PhysioNet ─────────────────────────────────────────────────────
+    log.info("Loading PhysioNet MMIDB (n_subjects=%s)...", args.n_subjects)
+    dataset  = PhysionetMI()
+    paradigm = LeftRightImagery(fmin=4.0, fmax=40.0, resample=128.0)
+    subjects = dataset.subject_list
+    if args.n_subjects is not None:
+        subjects = subjects[: args.n_subjects]
+
+    all_X_list, all_y_list = [], []
+    channel_names = ["C3", "Cz", "C4"]
+    for sid in subjects:
+        try:
+            X, y_labels, _ = paradigm.get_data(dataset=dataset, subjects=[sid])
+            classes = sorted(np.unique(y_labels))
+            label_map = {c: i for i, c in enumerate(classes)}
+            y = np.array([label_map[lb] for lb in y_labels], dtype=np.int64)
+            all_X_list.append(X.astype(np.float32))
+            all_y_list.append(y)
+            log.info("  Subject %d: X=%s", sid, X.shape)
+        except Exception as e:
+            log.warning("  Subject %d skipped: %s", sid, e)
+
+    if not all_X_list:
+        log.error("No PhysioNet data loaded. Exiting.")
+        sys.exit(1)
+
+    all_X = np.concatenate(all_X_list, axis=0)
+    all_y = np.concatenate(all_y_list, axis=0)
+    rng = np.random.default_rng(args.seed)
+    idx = rng.permutation(len(all_y))
+    all_X, all_y = all_X[idx], all_y[idx]
+    log.info("Pooled source: %d trials", len(all_y))
+
+    # ── CWT spectrograms ───────────────────────────────────────────────────
+    spec_config = SpectrogramConfig(
+        wavelet="morl", freq_min=4.0, freq_max=40.0,
+        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+    )
+    transform = CWTSpectrogramTransform(spec_config)
+
+    def to_imgs(X):
+        hwc = transform.transform_epochs(X, channel_names, 128.0)
+        return hwc.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
+
+    n_val   = max(1, int(len(all_y) * 0.15))
+    n_train = len(all_y) - n_val
+    log.info("Generating CWT spectrograms for %d train trials...", n_train)
+    imgs_train = to_imgs(all_X[:n_train])
+    imgs_val   = to_imgs(all_X[n_train:])
+
+    train_ds = TensorDataset(
+        torch.tensor(imgs_train),
+        torch.tensor(all_y[:n_train], dtype=torch.long),
+    )
+    val_ds = TensorDataset(
+        torch.tensor(imgs_val),
+        torch.tensor(all_y[n_train:], dtype=torch.long),
+    )
+
+    # ── Model + training ───────────────────────────────────────────────────
+    model_config = ModelConfig(
+        vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
+        vit_drop_rate=0.1, n_classes=2,
+    )
+    model   = ViTBranch(config=model_config, as_feature_extractor=False)
+    _device = torch.device(device)
+
+    def fwd(batch):
+        imgs, labels = batch
+        return model(imgs.to(_device)), labels.to(_device)
+
+    trainer = Trainer(
+        model=model, device=device,
+        learning_rate=1e-4, weight_decay=1e-4,
+        epochs=args.epochs, batch_size=args.batch_size,
+        warmup_epochs=5, patience=10,
+        label_smoothing=0.1, val_fraction=0.2,
+        seed=args.seed, num_workers=0,
+    )
+    t0 = time.time()
+    trainer.fit(train_ds, forward_fn=fwd, model_tag="vit_pretrain")
+    elapsed = time.time() - t0
+    log.info("Pretraining done in %.1fs", elapsed)
+
+    # Validation metrics
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size * 2,
+                            shuffle=False, num_workers=0)
+    y_pred, y_prob = trainer.predict(val_loader, forward_fn=fwd)
+    metrics = compute_metrics(all_y[n_train:], y_pred, y_prob)
+    log.info("Pretrain val: %.2f%%  kappa=%.3f", metrics["accuracy"], metrics["kappa"])
+
+    # ── Save checkpoint ────────────────────────────────────────────────────
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), checkpoint_path)
+    log.info("Checkpoint saved: %s", checkpoint_path)
+
+    results = {
+        "phase": "pretrain",
+        "source": "real_physionet",
+        "n_subjects": len(all_X_list),
+        "val_accuracy": metrics["accuracy"],
+        "val_kappa":    metrics["kappa"],
+        "val_f1":       metrics["f1_macro"],
+        "n_source_trials": int(len(all_y)),
+        "n_train": int(n_train),
+        "n_val":   int(n_val),
+        "elapsed_s": round(elapsed, 1),
+        "checkpoint": str(checkpoint_path),
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+    log.info("Saved: %s", out_path)
+    log.info("Stage 8 complete.")
+
+
+if __name__ == "__main__":
+    main()
