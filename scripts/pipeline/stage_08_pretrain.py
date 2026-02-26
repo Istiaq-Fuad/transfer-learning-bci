@@ -33,9 +33,13 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir",     required=True)
+    p.add_argument("--data-dir",    default="~/mne_data",
+                   help="Ignored by this stage (PhysioNet is downloaded automatically)")
     p.add_argument("--device",      default="auto")
     p.add_argument("--epochs",      type=int, default=50)
     p.add_argument("--batch-size",  type=int, default=32)
+    p.add_argument("--n-folds",     type=int, default=5,
+                   help="Ignored by this stage (pretraining uses a fixed val split)")
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--n-subjects",  type=int, default=None,
                    help="Number of PhysioNet subjects to use (default: all 109)")
@@ -147,7 +151,7 @@ def main() -> None:
 
     # ── Model + training ───────────────────────────────────────────────────
     model_config = ModelConfig(
-        vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
+        vit_model_name="efficientnet_b0", vit_pretrained=True,
         vit_drop_rate=0.1, n_classes=2,
     )
     model   = ViTBranch(config=model_config, as_feature_extractor=False)

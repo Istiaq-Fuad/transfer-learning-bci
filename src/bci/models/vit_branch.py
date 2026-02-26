@@ -1,13 +1,14 @@
-"""Vision Transformer (ViT) branch for spectrogram-based classification.
+"""Image backbone branch for spectrogram-based classification.
 
-Uses a pretrained ViT-Tiny from the `timm` library as a feature extractor.
-The ViT processes CWT spectrogram images of EEG signals, capturing
-spectral-temporal patterns through self-attention.
+Supports ViT and EfficientNet (and any other timm model) as feature extractors.
+The backbone processes CWT spectrogram images of EEG signals.
 
-Architecture:
+Architecture (feature-extractor mode):
     Input: (batch, 3, 224, 224) spectrogram images
-    -> ViT-Tiny (pretrained on ImageNet, fine-tuned)
-    -> Feature vector of dim 192
+    -> timm backbone (pretrained)
+    -> Feature vector of dim `feature_dim`
+       - EfficientNet-B0  -> 1280
+       - ViT-Tiny         -> 192
 """
 
 from __future__ import annotations
@@ -22,18 +23,69 @@ from bci.utils.config import ModelConfig
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Helpers to detect the classification head and feature dim in a timm model
+# in a model-agnostic way.
+# ---------------------------------------------------------------------------
+
+def _get_classifier_attr(backbone: nn.Module) -> str | None:
+    """Return the name of the classification head attribute, or None."""
+    for attr in ("head", "classifier", "fc", "head_fc"):
+        if hasattr(backbone, attr):
+            layer = getattr(backbone, attr)
+            # Must be an actual layer (not None / Identity) to be "real"
+            if isinstance(layer, (nn.Linear, nn.Sequential)):
+                return attr
+    return None
+
+
+def _get_feature_dim(backbone: nn.Module, head_attr: str) -> int:
+    """Return in_features of the classifier head."""
+    head = getattr(backbone, head_attr)
+    if isinstance(head, nn.Linear):
+        return head.in_features
+    if isinstance(head, nn.Sequential):
+        # Walk to the last Linear in the Sequential
+        for layer in reversed(list(head.children())):
+            if isinstance(layer, nn.Linear):
+                return layer.in_features
+    raise ValueError(f"Cannot determine feature_dim from head attribute '{head_attr}'")
+
+
+def _get_block_list(backbone: nn.Module) -> list[nn.Module]:
+    """Return the list of backbone blocks for partial un-freezing.
+
+    - ViT-style models expose `backbone.blocks` (ModuleList of transformer blocks)
+    - EfficientNet exposes `backbone.blocks` (Sequential of MBConv stages)
+    - Falls back to `backbone.features` then an empty list if not found.
+    """
+    if hasattr(backbone, "blocks"):
+        blocks_attr = backbone.blocks
+        if isinstance(blocks_attr, (nn.ModuleList, nn.Sequential)):
+            return list(blocks_attr.children())
+    if hasattr(backbone, "features") and isinstance(backbone.features, nn.Sequential):
+        return list(backbone.features.children())
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Main module
+# ---------------------------------------------------------------------------
 
 class ViTBranch(nn.Module):
-    """ViT-based feature extractor for EEG spectrograms.
+    """Timm-based image feature extractor for EEG spectrograms.
 
-    Loads a pretrained ViT-Tiny and replaces the classification head
-    with either an identity (for feature extraction) or a new classifier.
+    Despite the name (kept for backward compatibility), this class supports
+    any timm backbone — ViT, EfficientNet, ResNet, etc.
+
+    Loads a pretrained backbone and replaces the classification head with
+    either an identity (for feature extraction) or a new linear classifier.
 
     Args:
-        config: Model configuration with ViT parameters.
-        as_feature_extractor: If True, removes the classification head
-            and returns the feature vector. If False, adds a new head
-            for n_classes classification.
+        config: Model configuration with image-branch parameters.
+        as_feature_extractor: If True, removes the classification head and
+            returns the raw feature vector. If False, attaches a new head
+            for `n_classes` classification.
     """
 
     def __init__(
@@ -44,35 +96,44 @@ class ViTBranch(nn.Module):
         super().__init__()
         self.config = config or ModelConfig()
 
-        # Load pretrained ViT from timm
+        # Load backbone from timm
         self.backbone = timm.create_model(
             self.config.vit_model_name,
             pretrained=self.config.vit_pretrained,
             drop_rate=self.config.vit_drop_rate,
         )
 
-        # Get the feature dimension from the model
-        self.feature_dim = self.backbone.head.in_features
+        # Detect the classification head attribute and feature dimension
+        head_attr = _get_classifier_attr(self.backbone)
+        if head_attr is None:
+            raise ValueError(
+                f"Cannot find a classification head in timm model "
+                f"'{self.config.vit_model_name}'. "
+                "Expected one of: head, classifier, fc, head_fc."
+            )
+        self._head_attr = head_attr
+        self.feature_dim = _get_feature_dim(self.backbone, head_attr)
 
         if as_feature_extractor:
-            # Remove classification head -> output is feature vector
-            self.backbone.head = nn.Identity()
+            # Replace head with identity -> output is feature vector
+            setattr(self.backbone, head_attr, nn.Identity())
             logger.info(
-                "ViT branch (feature extractor): %s, feature_dim=%d",
-                self.config.vit_model_name, self.feature_dim,
+                "Image branch (feature extractor): %s [head=%s], feature_dim=%d",
+                self.config.vit_model_name, head_attr, self.feature_dim,
             )
         else:
-            # Replace with new classification head
-            self.backbone.head = nn.Linear(
-                self.feature_dim, self.config.n_classes,
+            # Attach a new classification head
+            setattr(
+                self.backbone, head_attr,
+                nn.Linear(self.feature_dim, self.config.n_classes),
             )
             logger.info(
-                "ViT branch (classifier): %s, n_classes=%d",
-                self.config.vit_model_name, self.config.n_classes,
+                "Image branch (classifier): %s [head=%s], n_classes=%d",
+                self.config.vit_model_name, head_attr, self.config.n_classes,
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the ViT backbone.
+        """Forward pass through the backbone.
 
         Args:
             x: Input tensor of shape (batch, 3, 224, 224).
@@ -84,38 +145,68 @@ class ViTBranch(nn.Module):
         return self.backbone(x)
 
     def freeze_backbone(self, unfreeze_last_n_blocks: int = 2) -> None:
-        """Freeze ViT backbone parameters for transfer learning.
+        """Freeze backbone parameters for transfer learning.
 
-        Keeps the last N transformer blocks and the head unfrozen.
+        Keeps the last N blocks and the classification head unfrozen.
+        Works for both ViT (backbone.blocks) and EfficientNet (backbone.features).
 
         Args:
-            unfreeze_last_n_blocks: Number of transformer blocks from the end
+            unfreeze_last_n_blocks: Number of backbone blocks from the end
                 to keep trainable. Default is 2.
         """
-        # Freeze everything
+        # Freeze everything first
         for param in self.backbone.parameters():
             param.requires_grad = False
 
         # Unfreeze the last N blocks
-        blocks = list(self.backbone.blocks)
-        for block in blocks[-unfreeze_last_n_blocks:]:
-            for param in block.parameters():
+        blocks = _get_block_list(self.backbone)
+        if blocks:
+            for block in blocks[-unfreeze_last_n_blocks:]:
+                for param in block.parameters():
+                    param.requires_grad = True
+        else:
+            logger.warning(
+                "freeze_backbone: could not find block list for '%s'; "
+                "only the head will be unfrozen.",
+                self.config.vit_model_name,
+            )
+
+        # Always unfreeze the classification head
+        head = getattr(self.backbone, self._head_attr, None)
+        if head is not None:
+            for param in head.parameters():
                 param.requires_grad = True
 
-        # Always unfreeze the head and norm
-        if hasattr(self.backbone, "head"):
-            for param in self.backbone.head.parameters():
-                param.requires_grad = True
+        # ViT-specific: unfreeze the final layer norm
         if hasattr(self.backbone, "norm"):
             for param in self.backbone.norm.parameters():
                 param.requires_grad = True
 
+        # EfficientNet-specific: unfreeze bn2 / conv_head after last block
+        for attr in ("conv_head", "bn2"):
+            if hasattr(self.backbone, attr):
+                for param in getattr(self.backbone, attr).parameters():
+                    param.requires_grad = True
+
         frozen = sum(1 for p in self.backbone.parameters() if not p.requires_grad)
-        total = sum(1 for p in self.backbone.parameters())
+        total  = sum(1 for p in self.backbone.parameters())
         logger.info(
             "Frozen %d/%d parameters (unfroze last %d blocks + head)",
             frozen, total, unfreeze_last_n_blocks,
         )
+
+    def get_backbone_params(self) -> list[nn.Parameter]:
+        """Return parameters that belong to the frozen/pretrained backbone."""
+        head = getattr(self.backbone, self._head_attr, None)
+        head_ids = {id(p) for p in (head.parameters() if head else [])}
+        return [p for p in self.backbone.parameters() if id(p) not in head_ids]
+
+    def get_head_params(self) -> list[nn.Parameter]:
+        """Return parameters that belong to the classification head."""
+        head = getattr(self.backbone, self._head_attr, None)
+        if head is None:
+            return []
+        return list(head.parameters())
 
     def get_num_params(self, trainable_only: bool = True) -> int:
         """Count model parameters.

@@ -82,8 +82,8 @@ class SpectrogramConfig:
 class ModelConfig:
     """Configuration for the model architecture."""
 
-    # ViT branch
-    vit_model_name: str = "vit_tiny_patch16_224"
+    # Image branch (EfficientNet-B0 by default; ViT also supported)
+    vit_model_name: str = "efficientnet_b0"
     vit_pretrained: bool = True
     vit_drop_rate: float = 0.1
 
@@ -94,10 +94,10 @@ class ModelConfig:
 
     # Fusion
     fusion_method: str = "attention"  # "attention", "concat", "gated"
-    fused_dim: int = 128
+    fused_dim: int = 256
 
     # Classifier head
-    classifier_hidden_dim: int = 64
+    classifier_hidden_dim: int = 128
     n_classes: int = 2
 
 

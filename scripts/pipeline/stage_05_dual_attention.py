@@ -126,11 +126,11 @@ def run_dual_branch(
             X_train, y_train, X_test, y_test
         )
         model_config = ModelConfig(
-            vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
+            vit_model_name="efficientnet_b0", vit_pretrained=True,
             vit_drop_rate=0.1, csp_n_components=6,
             math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method=fusion, fused_dim=128,
-            classifier_hidden_dim=64, n_classes=2,
+            fusion_method=fusion, fused_dim=256,
+            classifier_hidden_dim=128, n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=model_config)
         model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
@@ -146,6 +146,7 @@ def run_dual_branch(
             warmup_epochs=5, patience=10,
             label_smoothing=0.1, val_fraction=0.2,
             seed=seed, num_workers=0,
+            backbone_lr_scale=0.1,
         )
         trainer.fit(train_ds, forward_fn=fwd, model_tag=f"dual_{fusion}_f{fold_idx}")
 

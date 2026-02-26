@@ -1,10 +1,10 @@
-"""Dual-Branch Model: ViT + Math features with fusion.
+"""Dual-Branch Model: EfficientNet-B0 + Math features with fusion.
 
 The complete architecture for MI-EEG classification:
-    Branch A: CWT Spectrogram -> ViT-Tiny -> 192-dim features
+    Branch A: CWT Spectrogram -> EfficientNet-B0 -> 1280-dim features
     Branch B: CSP + Riemannian features -> MLP -> 128-dim features
-    Fusion: Attention-based fusion -> 128-dim
-    Classifier: MLP(128 -> 64 -> 2) -> Softmax
+    Fusion: Attention-based fusion -> 256-dim
+    Classifier: MLP(256 -> 128 -> 2) -> Softmax
 """
 
 from __future__ import annotations

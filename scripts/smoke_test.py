@@ -27,7 +27,7 @@ def test_config() -> bool:
     config = load_config()
     assert isinstance(config, ExperimentConfig)
     assert config.dataset.name == "bci_iv2a"
-    assert config.model.vit_model_name == "vit_tiny_patch16_224"
+    assert config.model.vit_model_name == "efficientnet_b0"
     logger.info("  Config: OK (name=%s)", config.name)
     return True
 

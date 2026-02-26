@@ -118,6 +118,7 @@ class Trainer:
         checkpoint_dir: str | Path | None = None,
         seed: int = 42,
         num_workers: int = 0,
+        backbone_lr_scale: float | None = None,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
@@ -133,14 +134,34 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
         self.seed = seed
         self.num_workers = num_workers
+        self.backbone_lr_scale = backbone_lr_scale
 
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     def _make_optimizer_and_scheduler(self, total_epochs: int):
+        if self.backbone_lr_scale is not None and hasattr(self.model, "vit_branch"):
+            # Differential LR: lower rate for the pretrained backbone,
+            # higher rate for everything else.
+            vit_branch = self.model.vit_branch  # type: ignore[attr-defined]
+            backbone_param_ids = {id(p) for p in vit_branch.get_backbone_params()}
+            backbone_params = [p for p in self.model.parameters()
+                               if id(p) in backbone_param_ids and p.requires_grad]
+            other_params    = [p for p in self.model.parameters()
+                               if id(p) not in backbone_param_ids and p.requires_grad]
+            param_groups = [
+                {"params": backbone_params, "lr": self.lr * self.backbone_lr_scale},
+                {"params": other_params,    "lr": self.lr},
+            ]
+            logger.info(
+                "Differential LR: backbone=%.2e, rest=%.2e",
+                self.lr * self.backbone_lr_scale, self.lr,
+            )
+        else:
+            param_groups = [{"params": list(self.model.parameters()), "lr": self.lr}]
+
         optimizer = AdamW(
-            self.model.parameters(),
-            lr=self.lr,
+            param_groups,
             weight_decay=self.weight_decay,
         )
         scheduler = _cosine_with_warmup_schedule(optimizer, self.warmup_epochs, total_epochs)

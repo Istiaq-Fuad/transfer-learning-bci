@@ -137,19 +137,21 @@ def main() -> None:
     def build_model(condition, math_input_dim):
         use_imagenet = condition in ("imagenet", "transfer")
         cfg = ModelConfig(
-            vit_model_name="vit_tiny_patch16_224",
+            vit_model_name="efficientnet_b0",
             vit_pretrained=use_imagenet,
             vit_drop_rate=0.1, csp_n_components=6,
             math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method="attention", fused_dim=128,
-            classifier_hidden_dim=64, n_classes=2,
+            fusion_method="attention", fused_dim=256,
+            classifier_hidden_dim=128, n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=cfg)
         if condition == "transfer":
             if checkpoint_path.exists():
                 ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+                # Strip classifier head keys (works for both 'head' and 'classifier')
                 backbone_state = {k: v for k, v in ckpt.items()
-                                  if not k.startswith("backbone.head")}
+                                  if not (k.startswith("backbone.head")
+                                          or k.startswith("backbone.classifier"))}
                 model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
             model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
         return model
@@ -207,6 +209,7 @@ def main() -> None:
                                 warmup_epochs=3, patience=8,
                                 label_smoothing=0.1, val_fraction=0.2,
                                 seed=trial_seed, num_workers=0,
+                                backbone_lr_scale=0.1 if condition == "transfer" else None,
                             )
                             trainer.fit(train_ds, forward_fn=fwd,
                                         model_tag=f"{condition}_f{fraction:.0%}")
