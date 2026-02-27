@@ -3,13 +3,19 @@
 Same architecture as Stage 5 but using simple concatenation fusion instead
 of attention. Within-subject 5-fold CV only.
 
-Output: <run-dir>/results/real_dual_branch_concat.json
+Supported backbones (--backbone):
+  vit_tiny_patch16_224  (default)
+  efficientnet_b0
+
+Output:
+  <run-dir>/results/real_dual_branch_concat_<backbone_short>.json
+  <run-dir>/plots/stage_06_<backbone_short>/
 
 Usage::
 
     uv run python scripts/pipeline/stage_06_dual_concat.py --run-dir runs/my_run
     uv run python scripts/pipeline/stage_06_dual_concat.py --run-dir runs/my_run \\
-        --epochs 50 --batch-size 32 --n-folds 5 --device cuda
+        --backbone vit_tiny_patch16_224 --epochs 50 --batch-size 32 --device cuda
 """
 
 from __future__ import annotations
@@ -22,6 +28,23 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+# Canonical per-backbone constants – single source of truth lives in the library.
+import bci.models.vit_branch as _vit_mod
+import bci.models.efficientnet_branch as _eff_mod
+
+_BACKBONE_SHORT = {
+    _vit_mod.MODEL_NAME: _vit_mod.BACKBONE_SHORT,
+    _eff_mod.MODEL_NAME: _eff_mod.BACKBONE_SHORT,
+}
+_FUSED_DIM = {
+    _vit_mod.MODEL_NAME: _vit_mod.DEFAULT_FUSED_DIM,
+    _eff_mod.MODEL_NAME: _eff_mod.DEFAULT_FUSED_DIM,
+}
+_CLASSIFIER_HIDDEN = {
+    _vit_mod.MODEL_NAME: _vit_mod.DEFAULT_CLS_HIDDEN,
+    _eff_mod.MODEL_NAME: _eff_mod.DEFAULT_CLS_HIDDEN,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,10 +59,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--n-folds",    type=int, default=5)
     p.add_argument("--seed",       type=int, default=42)
+    p.add_argument(
+        "--backbone",
+        default="vit_tiny_patch16_224",
+        choices=list(_BACKBONE_SHORT.keys()),
+        help="timm backbone model name",
+    )
+    p.add_argument(
+        "--data",
+        default="real",
+        choices=["real", "synthetic"],
+        help="'real' loads BCI IV-2a; 'synthetic' uses generated data (fast, for smoke tests)",
+    )
     return p.parse_args()
 
 
-def setup_logging(run_dir: Path) -> logging.Logger:
+def setup_logging(run_dir: Path, log_name: str) -> logging.Logger:
     fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
                         stream=sys.stdout)
@@ -47,7 +82,7 @@ def setup_logging(run_dir: Path) -> logging.Logger:
         logging.getLogger(lib).setLevel(logging.ERROR)
     log = logging.getLogger("stage_06")
     run_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(run_dir / "stage_06_dual_concat.log")
+    fh = logging.FileHandler(run_dir / log_name)
     fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
     log.addHandler(fh)
     return log
@@ -77,12 +112,66 @@ def load_bci_iv2a(data_dir: str, log) -> dict[int, tuple[np.ndarray, np.ndarray]
     return subject_data
 
 
+def save_fold_plots(
+    train_result,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    plots_dir: Path,
+    tag: str,
+) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import confusion_matrix
+    import seaborn as sns
+
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    history = train_result.history
+    epochs_range = [r.epoch for r in history]
+    train_losses = [r.train_loss for r in history]
+    val_losses   = [r.val_loss   for r in history]
+    val_accs     = [r.val_accuracy for r in history]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].plot(epochs_range, train_losses, label="Train Loss")
+    axes[0].plot(epochs_range, val_losses,   label="Val Loss")
+    axes[0].axvline(x=train_result.best_epoch, color="green", linestyle="--",
+                    alpha=0.7, label=f"Best epoch {train_result.best_epoch}")
+    axes[0].set_xlabel("Epoch"); axes[0].set_ylabel("Loss")
+    axes[0].set_title(f"{tag} – Loss"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(epochs_range, val_accs, label="Val Accuracy", color="orange")
+    axes[1].axvline(x=train_result.best_epoch, color="green", linestyle="--",
+                    alpha=0.7, label=f"Best: {train_result.best_val_accuracy:.1f}%")
+    axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Accuracy (%)")
+    axes[1].set_title(f"{tag} – Val Accuracy"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    fig.savefig(plots_dir / f"{tag}_curves.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    cm = confusion_matrix(y_true, y_pred)
+    fig2, ax2 = plt.subplots(figsize=(4, 3))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=["Left", "Right"], yticklabels=["Left", "Right"], ax=ax2)
+    ax2.set_title(f"{tag} – Confusion Matrix")
+    ax2.set_xlabel("Predicted"); ax2.set_ylabel("True")
+    plt.tight_layout()
+    fig2.savefig(plots_dir / f"{tag}_confusion.png", dpi=120, bbox_inches="tight")
+    plt.close(fig2)
+
+
 def main() -> None:
     args = parse_args()
-    run_dir = Path(args.run_dir)
-    log = setup_logging(run_dir)
+    run_dir  = Path(args.run_dir)
+    backbone = args.backbone
+    bshort   = _BACKBONE_SHORT.get(backbone, backbone)
+    log = setup_logging(run_dir, f"stage_06_dual_concat_{bshort}.log")
+    log.info("Backbone: %s  (short: %s)", backbone, bshort)
 
-    out_path = run_dir / "results" / "real_dual_branch_concat.json"
+    out_path  = run_dir / "results" / f"real_dual_branch_concat_{bshort}.json"
+    plots_dir = run_dir / "plots" / f"stage_06_{bshort}"
+
     if out_path.exists():
         log.info("Result already exists at %s – skipping.", out_path)
         return
@@ -99,14 +188,21 @@ def main() -> None:
     from bci.utils.config import ModelConfig
     from bci.utils.seed import get_device, set_seed
 
-    FUSION = "concat"
-    MODEL_NAME = "DualBranch-ViT+CSP+Riemann"
+    FUSION     = "concat"
+    MODEL_NAME = f"DualBranch-{bshort.upper()}+CSP+Riemann"
 
     device = get_device(args.device)
     log.info("Device: %s", device)
-    _device = torch.device(device)
+    _device    = torch.device(device)
+    fused_dim  = _FUSED_DIM.get(backbone, 256)
+    cls_hidden = _CLASSIFIER_HIDDEN.get(backbone, 128)
 
-    subject_data = load_bci_iv2a(args.data_dir, log)
+    if args.data == "synthetic":
+        from bci.training.cross_validation import make_synthetic_subject_data
+        log.info("Using synthetic data (smoke-test mode).")
+        subject_data = make_synthetic_subject_data(n_subjects=3, seed=args.seed)
+    else:
+        subject_data = load_bci_iv2a(args.data_dir, log)
     if not subject_data:
         log.error("No data loaded. Exiting.")
         sys.exit(1)
@@ -131,11 +227,11 @@ def main() -> None:
                 X[train_idx], y[train_idx], X[test_idx], y[test_idx]
             )
             model_config = ModelConfig(
-                vit_model_name="efficientnet_b0", vit_pretrained=True,
+                vit_model_name=backbone, vit_pretrained=True,
                 vit_drop_rate=0.1, csp_n_components=6,
                 math_hidden_dims=[256, 128], math_drop_rate=0.3,
-                fusion_method=FUSION, fused_dim=256,
-                classifier_hidden_dim=128, n_classes=2,
+                fusion_method=FUSION, fused_dim=fused_dim,
+                classifier_hidden_dim=cls_hidden, n_classes=2,
             )
             model = DualBranchModel(math_input_dim=math_input_dim, config=model_config)
             model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
@@ -153,8 +249,10 @@ def main() -> None:
                 seed=args.seed, num_workers=0,
                 backbone_lr_scale=0.1,
             )
-            trainer.fit(train_ds, forward_fn=fwd,
-                        model_tag=f"dual_{FUSION}_f{fold_counter}")
+            train_result = trainer.fit(
+                train_ds, forward_fn=fwd,
+                model_tag=f"dual_{FUSION}_{bshort}_f{fold_counter}",
+            )
 
             test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2,
                                      shuffle=False, num_workers=0)
@@ -169,6 +267,13 @@ def main() -> None:
             log.info("  Fold %d [S%02d]: acc=%.2f%%  kappa=%.3f",
                      fold_counter, sid, fr.accuracy, fr.kappa)
             all_folds.append(fr)
+
+            tag = f"S{sid:02d}_fold{fold_counter:03d}"
+            try:
+                save_fold_plots(train_result, y[test_idx], y_pred, plots_dir, tag)
+            except Exception as e:
+                log.warning("Plot save failed for %s: %s", tag, e)
+
             fold_counter += 1
 
     elapsed = time.time() - t0
@@ -176,8 +281,38 @@ def main() -> None:
     log.info("Done in %.1fs: %.2f%% ± %.2f%%",
              elapsed, result.mean_accuracy, result.std_accuracy)
 
+    # Per-subject summary plot
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        per_subj = result.per_subject_accuracy
+        sids   = sorted(per_subj.keys())
+        accs   = [per_subj[s] for s in sids]
+        mean_a = sum(accs) / len(accs)
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        colors = sns.color_palette("viridis", n_colors=len(sids))
+        bars = ax.bar([f"S{s}" for s in sids], accs, color=colors)
+        ax.axhline(y=mean_a, color="red", linestyle="--", label=f"Mean: {mean_a:.1f}%")
+        for bar, acc in zip(bars, accs):
+            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height() + 0.5,
+                    f"{acc:.1f}", ha="center", fontsize=9)
+        ax.set_xlabel("Subject"); ax.set_ylabel("Accuracy (%)")
+        ax.set_title(f"Stage 6 – {MODEL_NAME} per-subject accuracy")
+        ax.set_ylim(0, 105); ax.legend(); ax.grid(True, alpha=0.3, axis="y")
+        plt.tight_layout()
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(plots_dir / "per_subject_accuracy.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    except Exception as e:
+        log.warning("Per-subject plot failed: %s", e)
+
     data = {
-        "model": MODEL_NAME, "fusion": FUSION, "strategy": "within_subject",
+        "model": MODEL_NAME, "backbone": backbone, "fusion": FUSION,
+        "strategy": "within_subject",
         "mean_accuracy": result.mean_accuracy, "std_accuracy": result.std_accuracy,
         "mean_kappa": result.mean_kappa, "mean_f1": result.mean_f1,
         "n_folds": len(all_folds), "per_subject": result.per_subject_accuracy,
@@ -186,6 +321,7 @@ def main() -> None:
     with open(out_path, "w") as f:
         json.dump(data, f, indent=2)
     log.info("Saved: %s", out_path)
+    log.info("Plots: %s", plots_dir)
     log.info("Stage 6 complete.")
 
 

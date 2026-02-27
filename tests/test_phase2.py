@@ -222,7 +222,7 @@ class TestDualBranchModel:
         features = torch.randn(2, 16)
         with torch.no_grad():
             vit_f, math_f, fused_f = model.get_branch_features(images, features)
-        assert vit_f.shape == (2, 1280)  # EfficientNet-B0 output
+        assert vit_f.shape == (2, 192)   # ViT-Tiny output (default backbone)
         assert math_f.shape == (2, 128)  # MathBranch output (last hidden dim)
         assert fused_f.shape == (2, 32)  # fused_dim from config
 
@@ -236,7 +236,7 @@ class TestDualBranchModel:
         assert frozen < total, "Expected not all parameters frozen"
 
     def test_param_count_reasonable(self):
-        """Model should have roughly 4-6 million parameters (EfficientNet-B0 backbone)."""
+        """Model should have roughly 5-6 million parameters (ViT-Tiny backbone)."""
         model = self._make_model(math_input_dim=259)
         n_params = sum(p.numel() for p in model.parameters())
         assert 3_000_000 < n_params < 7_000_000, f"Unexpected param count: {n_params}"

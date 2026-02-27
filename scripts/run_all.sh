@@ -14,8 +14,11 @@
 #
 #   bash scripts/run_all.sh
 #
-#   # Specify GPU and custom run directory:
-#   RUN_DIR=runs/gpu_run bash scripts/run_all.sh --device cuda
+#   # Specify GPU and backbone:
+#   RUN_DIR=runs/gpu_run bash scripts/run_all.sh --device cuda --backbone efficientnet_b0
+#
+#   # Use ViT backbone instead:
+#   bash scripts/run_all.sh --backbone vit_tiny_patch16_224 --device cuda
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # HOW TO RUN STAGES ONE BY ONE
@@ -24,6 +27,7 @@
 # First, create a run directory (pick any name):
 #
 #   export RUN=runs/my_experiment
+#   export BB=efficientnet_b0   # or vit_tiny_patch16_224
 #
 # Then run each stage individually in order.
 # Every stage skips itself automatically if its output file already exists,
@@ -43,31 +47,31 @@
 #
 #   Stage 4 – Baseline C: CWT + ViT-Tiny (within-subject):
 #     uv run python scripts/pipeline/stage_04_baseline_c.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
 #   Stage 5 – Dual-branch, attention fusion (within-subject + LOSO):
 #     uv run python scripts/pipeline/stage_05_dual_attention.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
 #   Stage 6 – Dual-branch, concat fusion (within-subject):
 #     uv run python scripts/pipeline/stage_06_dual_concat.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
 #   Stage 7 – Dual-branch, gated fusion (within-subject):
 #     uv run python scripts/pipeline/stage_07_dual_gated.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
-#   Stage 8 – Pretrain ViT on PhysioNet MMIDB:
+#   Stage 8 – Pretrain backbone on PhysioNet MMIDB:
 #     uv run python scripts/pipeline/stage_08_pretrain.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
 #   Stage 9 – Finetune comparison (scratch / imagenet / transfer):
 #     uv run python scripts/pipeline/stage_09_finetune.py \
-#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
 #
 #   Stage 10 – Reduced-data transfer learning experiment:
 #     uv run python scripts/pipeline/stage_10_reduced_data.py \
-#         --run-dir $RUN --epochs 50 --n-repeats 3 --device cuda
+#         --run-dir $RUN --backbone $BB --epochs 50 --n-repeats 3 --device cuda
 #
 #   Stage 11 – Compile results, figures, and stats:
 #     uv run python scripts/pipeline/stage_11_phase4.py \
@@ -76,6 +80,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONS (for this script)
 # ─────────────────────────────────────────────────────────────────────────────
+#   --backbone NAME    timm backbone name  (default: vit_tiny_patch16_224)
+#                        choices: vit_tiny_patch16_224 | efficientnet_b0
 #   --device DEVICE    pytorch device     (default: auto)
 #   --epochs N         max epochs/fold    (default: 50)
 #   --batch-size N     batch size         (default: 32)
@@ -84,6 +90,7 @@
 #   --seed N           random seed        (default: 42)
 #   --n-subjects N     PhysioNet subjects for Stage 8 (default: all 109)
 #   --data-dir DIR     MNE data directory (default: ~/mne_data)
+#   --data MODE        'real' (default) or 'synthetic' (fast CPU smoke test)
 #
 # Set RUN_DIR env variable to reuse an existing directory, e.g.:
 #   RUN_DIR=runs/2024-01-15_143022 bash scripts/run_all.sh
@@ -108,6 +115,7 @@ if [[ ! -f "pyproject.toml" ]]; then
 fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────
+BACKBONE="vit_tiny_patch16_224"
 DEVICE="auto"
 EPOCHS=50
 BATCH_SIZE=32
@@ -116,10 +124,12 @@ N_REPEATS=3
 SEED=42
 N_SUBJECTS=""
 DATA_DIR="~/mne_data"
+DATA_MODE="real"
 
 # ── Parse flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --backbone)    BACKBONE="$2";    shift 2 ;;
         --device)      DEVICE="$2";      shift 2 ;;
         --epochs)      EPOCHS="$2";      shift 2 ;;
         --batch-size)  BATCH_SIZE="$2";  shift 2 ;;
@@ -128,6 +138,7 @@ while [[ $# -gt 0 ]]; do
         --seed)        SEED="$2";        shift 2 ;;
         --n-subjects)  N_SUBJECTS="$2";  shift 2 ;;
         --data-dir)    DATA_DIR="$2";    shift 2 ;;
+        --data)        DATA_MODE="$2";   shift 2 ;;
         *)
             echo "Unknown option: $1" >&2
             echo "Run: bash scripts/run_all.sh  (with no args) to see usage in the header." >&2
@@ -135,6 +146,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ── Derive backbone short tag (for checkpoint path) ───────────────────────
+case "$BACKBONE" in
+    vit_tiny_patch16_224) BACKBONE_SHORT="vit"         ;;
+    efficientnet_b0)      BACKBONE_SHORT="efficientnet" ;;
+    *)                    BACKBONE_SHORT="$BACKBONE"   ;;
+esac
 
 # ── Run directory ─────────────────────────────────────────────────────────
 if [[ -z "${RUN_DIR:-}" ]]; then
@@ -168,16 +186,19 @@ PY_BASE=(
     --n-folds      "$N_FOLDS"
     --epochs       "$EPOCHS"
     --batch-size   "$BATCH_SIZE"
+    --backbone     "$BACKBONE"
+    --data         "$DATA_MODE"
 )
 
 PRETRAIN_FLAGS=("${PY_BASE[@]}")
 [[ -n "$N_SUBJECTS" ]] && PRETRAIN_FLAGS+=(--n-subjects "$N_SUBJECTS")
 
-CKPT="$RUN_DIR/checkpoints/vit_pretrained_physionet.pt"
+CKPT="$RUN_DIR/checkpoints/vit_pretrained_physionet_${BACKBONE_SHORT}.pt"
 
 # ── Print settings ────────────────────────────────────────────────────────
 _banner "BCI THESIS PIPELINE  –  Full run"
 _log "Run directory : $RUN_DIR"
+_log "Backbone      : $BACKBONE  (short: $BACKBONE_SHORT)"
 _log "Device        : $DEVICE"
 _log "Epochs        : $EPOCHS"
 _log "Batch size    : $BATCH_SIZE"
@@ -185,6 +206,7 @@ _log "CV folds      : $N_FOLDS"
 _log "Repeats (S10) : $N_REPEATS"
 _log "Seed          : $SEED"
 _log "Data dir      : $DATA_DIR"
+_log "Data mode     : $DATA_MODE"
 _log ""
 
 T_ALL=$(date +%s)
@@ -311,6 +333,8 @@ S=$(( TOTAL % 60 ))
 
 _banner "ALL STAGES COMPLETE  (${H}h ${M}m ${S}s)"
 _log "Run directory : $RUN_DIR"
+_log "Backbone      : $BACKBONE  (short: $BACKBONE_SHORT)"
 _log "Results       : $RUN_DIR/results/"
+_log "Plots         : $RUN_DIR/plots/"
 _log "Figures       : $RUN_DIR/figures/"
 _log "Log           : $LOG"

@@ -1,22 +1,24 @@
-"""Image backbone branch for spectrogram-based classification.
+"""EfficientNet-B0 image backbone branch for spectrogram-based classification.
 
-Supports ViT and EfficientNet (and any other timm model) as feature extractors.
-The backbone processes CWT spectrogram images of EEG signals.
+EfficientNet-B0 processes CWT spectrogram images of EEG signals and produces
+a 1280-dimensional feature vector used by the DualBranchModel.
 
 Architecture (feature-extractor mode):
     Input: (batch, 3, 224, 224) spectrogram images
-    -> timm backbone (pretrained)
-    -> Feature vector of dim `feature_dim`
-       - ViT-Tiny (default)  -> 192
-       - EfficientNet-B0     -> 1280  (use EfficientNetBranch instead)
+    -> EfficientNet-B0 (pretrained ImageNet)
+    -> 1280-dim feature vector
 
-Canonical architecture constants for ViT-Tiny
+This module is the EfficientNet-specific counterpart to vit_branch.py.
+The class interface is intentionally identical so that DualBranchModel can
+swap between the two without changes to the fusion or classifier layers.
+
+Canonical architecture dimensions for EfficientNet-B0
 (used by pipeline stages and run_all.sh to avoid magic numbers):
 
-    FEATURE_DIM          = 192    # ViT-Tiny backbone output before fusion
-    DEFAULT_FUSED_DIM    = 128    # after AttentionFusion
-    DEFAULT_CLS_HIDDEN   = 64     # ClassifierHead hidden layer
-    BACKBONE_SHORT       = "vit"  # short tag for filenames
+    FEATURE_DIM          = 1280   # backbone output before fusion
+    DEFAULT_FUSED_DIM    = 256    # after AttentionFusion
+    DEFAULT_CLS_HIDDEN   = 128    # ClassifierHead hidden layer
+    BACKBONE_SHORT       = "efficientnet"  # short tag for filenames
 """
 
 from __future__ import annotations
@@ -28,92 +30,57 @@ import torch
 import torch.nn as nn
 
 from bci.utils.config import ModelConfig
+from bci.models.vit_branch import (
+    _get_classifier_attr,
+    _get_feature_dim,
+    _get_block_list,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Canonical architecture constants for ViT-Tiny
+# Canonical architecture constants for EfficientNet-B0
 # Import these in pipeline scripts instead of duplicating the dicts.
 # ---------------------------------------------------------------------------
 
-#: Short tag used in output filenames (e.g. "real_dual_branch_attention_vit.json")
-BACKBONE_SHORT: str = "vit"
+#: Short tag used in output filenames (e.g. "real_dual_branch_attention_efficientnet.json")
+BACKBONE_SHORT: str = "efficientnet"
 
-#: ViT-Tiny backbone output dimension (before fusion)
-FEATURE_DIM: int = 192
+#: EfficientNet-B0 backbone output dimension (before fusion)
+FEATURE_DIM: int = 1280
 
 #: Default fused feature dimension after AttentionFusion
-DEFAULT_FUSED_DIM: int = 128
+DEFAULT_FUSED_DIM: int = 256
 
 #: Default ClassifierHead hidden layer dimension
-DEFAULT_CLS_HIDDEN: int = 64
+DEFAULT_CLS_HIDDEN: int = 128
 
 #: The timm model name this module is designed for
-MODEL_NAME: str = "vit_tiny_patch16_224"
-
-# ---------------------------------------------------------------------------
-# Helpers to detect the classification head and feature dim in a timm model
-# in a model-agnostic way.
-# ---------------------------------------------------------------------------
-
-def _get_classifier_attr(backbone: nn.Module) -> str | None:
-    """Return the name of the classification head attribute, or None."""
-    for attr in ("head", "classifier", "fc", "head_fc"):
-        if hasattr(backbone, attr):
-            layer = getattr(backbone, attr)
-            # Must be an actual layer (not None / Identity) to be "real"
-            if isinstance(layer, (nn.Linear, nn.Sequential)):
-                return attr
-    return None
-
-
-def _get_feature_dim(backbone: nn.Module, head_attr: str) -> int:
-    """Return in_features of the classifier head."""
-    head = getattr(backbone, head_attr)
-    if isinstance(head, nn.Linear):
-        return head.in_features
-    if isinstance(head, nn.Sequential):
-        # Walk to the last Linear in the Sequential
-        for layer in reversed(list(head.children())):
-            if isinstance(layer, nn.Linear):
-                return layer.in_features
-    raise ValueError(f"Cannot determine feature_dim from head attribute '{head_attr}'")
-
-
-def _get_block_list(backbone: nn.Module) -> list[nn.Module]:
-    """Return the list of backbone blocks for partial un-freezing.
-
-    - ViT-style models expose `backbone.blocks` (ModuleList of transformer blocks)
-    - EfficientNet exposes `backbone.blocks` (Sequential of MBConv stages)
-    - Falls back to `backbone.features` then an empty list if not found.
-    """
-    if hasattr(backbone, "blocks"):
-        blocks_attr = backbone.blocks
-        if isinstance(blocks_attr, (nn.ModuleList, nn.Sequential)):
-            return list(blocks_attr.children())
-    if hasattr(backbone, "features") and isinstance(backbone.features, nn.Sequential):
-        return list(backbone.features.children())
-    return []
+MODEL_NAME: str = "efficientnet_b0"
 
 
 # ---------------------------------------------------------------------------
-# Main module
+# EfficientNetBranch
 # ---------------------------------------------------------------------------
 
-class ViTBranch(nn.Module):
-    """Timm-based image feature extractor for EEG spectrograms.
+class EfficientNetBranch(nn.Module):
+    """EfficientNet-B0 image feature extractor for EEG spectrograms.
 
-    Despite the name (kept for backward compatibility), this class supports
-    any timm backbone — ViT, EfficientNet, ResNet, etc.
+    Loads a pretrained EfficientNet-B0 backbone and replaces the
+    classification head with either an identity (for feature extraction) or
+    a new linear classifier.
 
-    Loads a pretrained backbone and replaces the classification head with
-    either an identity (for feature extraction) or a new linear classifier.
+    The public interface is identical to ViTBranch so that DualBranchModel
+    can use either branch transparently.
 
     Args:
-        config: Model configuration with image-branch parameters.
+        config: Model configuration. ``config.vit_model_name`` should be
+            ``"efficientnet_b0"``, but any EfficientNet variant supported by
+            timm will also work.
         as_feature_extractor: If True, removes the classification head and
-            returns the raw feature vector. If False, attaches a new head
-            for `n_classes` classification.
+            returns the raw 1280-dim feature vector. If False, attaches a new
+            linear head for ``n_classes`` classification (used during
+            standalone pretraining on PhysioNet).
     """
 
     def __init__(
@@ -122,7 +89,7 @@ class ViTBranch(nn.Module):
         as_feature_extractor: bool = True,
     ) -> None:
         super().__init__()
-        self.config = config or ModelConfig()
+        self.config = config or ModelConfig(vit_model_name=MODEL_NAME)
 
         # Load backbone from timm
         self.backbone = timm.create_model(
@@ -146,22 +113,22 @@ class ViTBranch(nn.Module):
             # Replace head with identity -> output is feature vector
             setattr(self.backbone, head_attr, nn.Identity())
             logger.info(
-                "Image branch (feature extractor): %s [head=%s], feature_dim=%d",
+                "EfficientNet branch (feature extractor): %s [head=%s], feature_dim=%d",
                 self.config.vit_model_name, head_attr, self.feature_dim,
             )
         else:
-            # Attach a new classification head
+            # Attach a new classification head for standalone training
             setattr(
                 self.backbone, head_attr,
                 nn.Linear(self.feature_dim, self.config.n_classes),
             )
             logger.info(
-                "Image branch (classifier): %s [head=%s], n_classes=%d",
+                "EfficientNet branch (classifier): %s [head=%s], n_classes=%d",
                 self.config.vit_model_name, head_attr, self.config.n_classes,
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the backbone.
+        """Forward pass through the EfficientNet backbone.
 
         Args:
             x: Input tensor of shape (batch, 3, 224, 224).
@@ -175,18 +142,17 @@ class ViTBranch(nn.Module):
     def freeze_backbone(self, unfreeze_last_n_blocks: int = 2) -> None:
         """Freeze backbone parameters for transfer learning.
 
-        Keeps the last N blocks and the classification head unfrozen.
-        Works for both ViT (backbone.blocks) and EfficientNet (backbone.features).
+        Keeps the last N MBConv stages and the classification head unfrozen.
 
         Args:
-            unfreeze_last_n_blocks: Number of backbone blocks from the end
+            unfreeze_last_n_blocks: Number of backbone stages from the end
                 to keep trainable. Default is 2.
         """
         # Freeze everything first
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # Unfreeze the last N blocks
+        # Unfreeze the last N blocks (EfficientNet exposes backbone.blocks)
         blocks = _get_block_list(self.backbone)
         if blocks:
             for block in blocks[-unfreeze_last_n_blocks:]:
@@ -205,12 +171,7 @@ class ViTBranch(nn.Module):
             for param in head.parameters():
                 param.requires_grad = True
 
-        # ViT-specific: unfreeze the final layer norm
-        if hasattr(self.backbone, "norm"):
-            for param in self.backbone.norm.parameters():
-                param.requires_grad = True
-
-        # EfficientNet-specific: unfreeze bn2 / conv_head after last block
+        # EfficientNet-specific: unfreeze bn2 / conv_head after last stage
         for attr in ("conv_head", "bn2"):
             if hasattr(self.backbone, attr):
                 for param in getattr(self.backbone, attr).parameters():

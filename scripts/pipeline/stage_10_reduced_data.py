@@ -6,13 +6,20 @@ trains the DualBranchModel multiple times and records accuracy.
 
 Requires the Stage 8 checkpoint for the 'transfer' condition.
 
-Output: <run-dir>/results/real_reduced_data_results.json
+Supported backbones (--backbone):
+  vit_tiny_patch16_224  (default)
+  efficientnet_b0
+
+Output:
+  <run-dir>/results/real_reduced_data_results_<backbone_short>.json
+  <run-dir>/plots/stage_10_<backbone_short>/  (accuracy-vs-fraction summary plot)
 
 Usage::
 
     uv run python scripts/pipeline/stage_10_reduced_data.py --run-dir runs/my_run
     uv run python scripts/pipeline/stage_10_reduced_data.py --run-dir runs/my_run \\
-        --checkpoint runs/my_run/checkpoints/vit_pretrained_physionet.pt \\
+        --backbone vit_tiny_patch16_224 \\
+        --checkpoint runs/my_run/checkpoints/vit_pretrained_physionet_vit.pt \\
         --fractions 0.10 0.25 0.50 0.75 1.00 \\
         --n-repeats 3 --n-folds 5 --epochs 50 --batch-size 32 --device cuda
 """
@@ -27,6 +34,23 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+# Canonical per-backbone constants – single source of truth lives in the library.
+import bci.models.vit_branch as _vit_mod
+import bci.models.efficientnet_branch as _eff_mod
+
+_BACKBONE_SHORT = {
+    _vit_mod.MODEL_NAME: _vit_mod.BACKBONE_SHORT,
+    _eff_mod.MODEL_NAME: _eff_mod.BACKBONE_SHORT,
+}
+_FUSED_DIM = {
+    _vit_mod.MODEL_NAME: _vit_mod.DEFAULT_FUSED_DIM,
+    _eff_mod.MODEL_NAME: _eff_mod.DEFAULT_FUSED_DIM,
+}
+_CLASSIFIER_HIDDEN = {
+    _vit_mod.MODEL_NAME: _vit_mod.DEFAULT_CLS_HIDDEN,
+    _eff_mod.MODEL_NAME: _eff_mod.DEFAULT_CLS_HIDDEN,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,14 +72,26 @@ def parse_args() -> argparse.Namespace:
         default=[0.10, 0.25, 0.50, 0.75, 1.00],
     )
     p.add_argument(
+        "--backbone",
+        default="vit_tiny_patch16_224",
+        choices=list(_BACKBONE_SHORT.keys()),
+        help="timm backbone model name",
+    )
+    p.add_argument(
         "--checkpoint", default=None,
-        help="Path to ViT checkpoint from Stage 8 "
-             "(default: <run-dir>/checkpoints/vit_pretrained_physionet.pt)",
+        help="Path to backbone checkpoint from Stage 8 "
+             "(default: <run-dir>/checkpoints/vit_pretrained_physionet_<backbone_short>.pt)",
+    )
+    p.add_argument(
+        "--data",
+        default="real",
+        choices=["real", "synthetic"],
+        help="'real' loads BCI IV-2a; 'synthetic' uses generated data (fast, for smoke tests)",
     )
     return p.parse_args()
 
 
-def setup_logging(run_dir: Path) -> logging.Logger:
+def setup_logging(run_dir: Path, log_name: str) -> logging.Logger:
     fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
                         stream=sys.stdout)
@@ -63,7 +99,7 @@ def setup_logging(run_dir: Path) -> logging.Logger:
         logging.getLogger(lib).setLevel(logging.ERROR)
     log = logging.getLogger("stage_10")
     run_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(run_dir / "stage_10_reduced_data.log")
+    fh = logging.FileHandler(run_dir / log_name)
     fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
     log.addHandler(fh)
     return log
@@ -93,19 +129,70 @@ def load_bci_iv2a(data_dir: str, log) -> dict[int, tuple[np.ndarray, np.ndarray]
     return subject_data
 
 
-def main() -> None:
-    args = parse_args()
-    run_dir = Path(args.run_dir)
-    log = setup_logging(run_dir)
+def save_fraction_summary_plot(
+    results: dict[str, dict],
+    fractions: list[float],
+    plots_dir: Path,
+    backbone: str,
+    bshort: str,
+) -> None:
+    """Save accuracy-vs-fraction curves for scratch vs. transfer."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    out_path = run_dir / "results" / "real_reduced_data_results.json"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    conditions = list(results.keys())
+    colors = {"scratch": "steelblue", "transfer": "darkorange"}
+    markers = {"scratch": "o", "transfer": "s"}
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for cond in conditions:
+        cond_data = results[cond]
+        xs, ys, errs = [], [], []
+        for frac in fractions:
+            frac_str = f"{frac:.2f}"
+            if frac_str in cond_data and not np.isnan(cond_data[frac_str]["mean"]):
+                xs.append(frac * 100)
+                ys.append(cond_data[frac_str]["mean"])
+                errs.append(cond_data[frac_str]["std"])
+        if xs:
+            ax.errorbar(
+                xs, ys, yerr=errs,
+                label=cond.capitalize(),
+                color=colors.get(cond, None),
+                marker=markers.get(cond, "o"),
+                capsize=4, linewidth=2, markersize=7,
+            )
+
+    ax.set_xlabel("Training data fraction (%)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title(f"Stage 10 – Reduced-data experiment ({backbone})")
+    ax.legend(); ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(plots_dir / "accuracy_vs_fraction.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    args     = parse_args()
+    run_dir  = Path(args.run_dir)
+    backbone = args.backbone
+    bshort   = _BACKBONE_SHORT.get(backbone, backbone)
+    log      = setup_logging(run_dir, f"stage_10_reduced_data_{bshort}.log")
+    log.info("Backbone: %s  (short: %s)", backbone, bshort)
+
+    out_path  = run_dir / "results" / f"real_reduced_data_results_{bshort}.json"
+    plots_dir = run_dir / "plots"   / f"stage_10_{bshort}"
+
     if out_path.exists():
         log.info("Result already exists at %s – skipping.", out_path)
         return
 
+    # Default checkpoint uses backbone-specific name from Stage 8
     checkpoint_path = (
         Path(args.checkpoint) if args.checkpoint
-        else run_dir / "checkpoints" / "vit_pretrained_physionet.pt"
+        else run_dir / "checkpoints" / f"vit_pretrained_physionet_{bshort}.pt"
     )
 
     import torch
@@ -119,11 +206,19 @@ def main() -> None:
     from bci.utils.config import ModelConfig
     from bci.utils.seed import get_device, set_seed
 
+    fused_dim  = _FUSED_DIM.get(backbone, 256)
+    cls_hidden = _CLASSIFIER_HIDDEN.get(backbone, 128)
+
     device  = get_device(args.device)
     log.info("Device: %s", device)
     _device = torch.device(device)
 
-    subject_data = load_bci_iv2a(args.data_dir, log)
+    if args.data == "synthetic":
+        from bci.training.cross_validation import make_synthetic_subject_data
+        log.info("Using synthetic data (smoke-test mode).")
+        subject_data = make_synthetic_subject_data(n_subjects=3, seed=args.seed)
+    else:
+        subject_data = load_bci_iv2a(args.data_dir, log)
     if not subject_data:
         log.error("No data loaded. Exiting.")
         sys.exit(1)
@@ -137,12 +232,12 @@ def main() -> None:
     def build_model(condition, math_input_dim):
         use_imagenet = condition in ("imagenet", "transfer")
         cfg = ModelConfig(
-            vit_model_name="efficientnet_b0",
+            vit_model_name=backbone,
             vit_pretrained=use_imagenet,
             vit_drop_rate=0.1, csp_n_components=6,
             math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method="attention", fused_dim=256,
-            classifier_hidden_dim=128, n_classes=2,
+            fusion_method="attention", fused_dim=fused_dim,
+            classifier_hidden_dim=cls_hidden, n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=cfg)
         if condition == "transfer":
@@ -212,7 +307,7 @@ def main() -> None:
                                 backbone_lr_scale=0.1 if condition == "transfer" else None,
                             )
                             trainer.fit(train_ds, forward_fn=fwd,
-                                        model_tag=f"{condition}_f{fraction:.0%}")
+                                        model_tag=f"{condition}_{bshort}_f{fraction:.0%}")
                             test_loader = DataLoader(
                                 test_ds, batch_size=args.batch_size * 2,
                                 shuffle=False, num_workers=0,
@@ -249,6 +344,13 @@ def main() -> None:
     elapsed = time.time() - t_total
     log.info("Reduced-data experiment done in %.1fs (%.1f min)", elapsed, elapsed / 60)
 
+    # Save accuracy-vs-fraction summary plot
+    try:
+        save_fraction_summary_plot(results, args.fractions, plots_dir, backbone, bshort)
+        log.info("Summary plot saved: %s", plots_dir / "accuracy_vs_fraction.png")
+    except Exception as e:
+        log.warning("Fraction summary plot failed: %s", e)
+
     # Reformat to match phase4_compile_results.py expectations
     summary: dict[str, dict] = {}
     for cond, frac_data in results.items():
@@ -264,7 +366,11 @@ def main() -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
-        json.dump({"fractions": args.fractions, "results": summary}, f, indent=2)
+        json.dump({
+            "backbone": backbone,
+            "fractions": args.fractions,
+            "results": summary,
+        }, f, indent=2)
     log.info("Saved: %s", out_path)
     log.info("Stage 10 complete.")
 

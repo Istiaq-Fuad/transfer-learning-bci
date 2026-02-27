@@ -1,10 +1,23 @@
-"""Dual-Branch Model: EfficientNet-B0 + Math features with fusion.
+"""Dual-Branch Model: image backbone + Math features with fusion.
 
 The complete architecture for MI-EEG classification:
-    Branch A: CWT Spectrogram -> EfficientNet-B0 -> 1280-dim features
-    Branch B: CSP + Riemannian features -> MLP -> 128-dim features
-    Fusion: Attention-based fusion -> 256-dim
-    Classifier: MLP(256 -> 128 -> 2) -> Softmax
+
+    Branch A (image): CWT Spectrogram -> image backbone -> feature vector
+        - ViT-Tiny          -> 192-dim features  (default)
+        - EfficientNet-B0   -> 1280-dim features
+
+    Branch B (math):  CSP + Riemannian features -> MLP -> 128-dim features
+
+    Fusion: Attention-based fusion -> fused_dim (128 for ViT, 256 for EfficientNet)
+    Classifier: MLP(fused_dim -> classifier_hidden_dim -> 2) -> Softmax
+
+The image branch class is selected automatically from ``config.vit_model_name``:
+    - ``"efficientnet_b0"`` -> :class:`EfficientNetBranch`
+    - anything else         -> :class:`ViTBranch`
+
+The attribute ``self.vit_branch`` is kept for both backbones for backward
+compatibility with checkpoint loading code that accesses
+``model.vit_branch.backbone``.
 """
 
 from __future__ import annotations
@@ -14,6 +27,7 @@ import logging
 import torch
 import torch.nn as nn
 
+from bci.models.efficientnet_branch import EfficientNetBranch
 from bci.models.fusion import create_fusion
 from bci.models.math_branch import MathBranch
 from bci.models.vit_branch import ViTBranch
@@ -57,8 +71,15 @@ class ClassifierHead(nn.Module):
 class DualBranchModel(nn.Module):
     """Full dual-branch model for MI-EEG classification.
 
-    Combines a ViT-based spectrogram branch with a handcrafted feature
-    branch, fuses them with attention, and classifies.
+    Combines an image backbone spectrogram branch with a handcrafted feature
+    branch, fuses them with attention (or concat / gated), and classifies.
+
+    The image branch class is chosen from ``config.vit_model_name``:
+        - ``"efficientnet_b0"`` -> :class:`EfficientNetBranch`
+        - anything else         -> :class:`ViTBranch`
+
+    The branch is always stored as ``self.vit_branch`` for backward
+    compatibility with checkpoint loading code.
 
     Args:
         math_input_dim: Dimensionality of the handcrafted feature vector
@@ -74,8 +95,16 @@ class DualBranchModel(nn.Module):
         super().__init__()
         self.config = config or ModelConfig()
 
-        # Branch A: ViT for spectrograms
-        self.vit_branch = ViTBranch(
+        # Branch A: image backbone for spectrograms.
+        # Select the dedicated branch class based on the configured model name.
+        # The attribute is always named `vit_branch` for backward compatibility
+        # with checkpoint loading (model.vit_branch.backbone).
+        _BranchCls = (
+            EfficientNetBranch
+            if self.config.vit_model_name == "efficientnet_b0"
+            else ViTBranch
+        )
+        self.vit_branch = _BranchCls(
             config=self.config, as_feature_extractor=True,
         )
 
@@ -135,10 +164,13 @@ class DualBranchModel(nn.Module):
         return logits
 
     def freeze_vit_backbone(self, unfreeze_last_n_blocks: int = 2) -> None:
-        """Freeze the ViT backbone for transfer learning.
+        """Freeze the image backbone for transfer learning.
+
+        Delegates to the underlying branch's ``freeze_backbone`` method,
+        which handles both ViT and EfficientNet architectures.
 
         Args:
-            unfreeze_last_n_blocks: Number of ViT blocks to keep trainable.
+            unfreeze_last_n_blocks: Number of backbone blocks to keep trainable.
         """
         self.vit_branch.freeze_backbone(unfreeze_last_n_blocks)
 

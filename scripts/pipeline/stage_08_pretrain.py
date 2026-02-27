@@ -1,17 +1,23 @@
-"""Stage 8 – Pretrain ViT on PhysioNet MMIDB.
+"""Stage 8 – Pretrain image backbone on PhysioNet MMIDB.
 
-Trains the ViT-Tiny branch as a standalone classifier on pooled PhysioNet
+Trains the image backbone branch as a standalone classifier on pooled PhysioNet
 Left/Right Motor Imagery data. Saves the resulting weights as a checkpoint
 for use in Stages 9 and 10.
 
+Supported backbones (--backbone):
+  vit_tiny_patch16_224  (default)
+  efficientnet_b0
+
 Output:
-  <run-dir>/checkpoints/vit_pretrained_physionet.pt
-  <run-dir>/results/real_pretrain_physionet.json
+  <run-dir>/checkpoints/vit_pretrained_physionet_<backbone_short>.pt
+  <run-dir>/results/real_pretrain_physionet_<backbone_short>.json
+  <run-dir>/plots/stage_08_<backbone_short>/  (pretraining loss/accuracy curves)
 
 Usage::
 
     uv run python scripts/pipeline/stage_08_pretrain.py --run-dir runs/my_run
     uv run python scripts/pipeline/stage_08_pretrain.py --run-dir runs/my_run \\
+        --backbone vit_tiny_patch16_224 \\
         --n-subjects 109 --epochs 50 --batch-size 32 --device cuda
 """
 
@@ -26,10 +32,19 @@ from pathlib import Path
 
 import numpy as np
 
+# Canonical per-backbone constants – single source of truth lives in the library.
+import bci.models.vit_branch as _vit_mod
+import bci.models.efficientnet_branch as _eff_mod
+
+_BACKBONE_SHORT = {
+    _vit_mod.MODEL_NAME: _vit_mod.BACKBONE_SHORT,
+    _eff_mod.MODEL_NAME: _eff_mod.BACKBONE_SHORT,
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 8: Pretrain ViT on PhysioNet MMIDB.",
+        description="Stage 8: Pretrain image backbone on PhysioNet MMIDB.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir",     required=True)
@@ -43,10 +58,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--n-subjects",  type=int, default=None,
                    help="Number of PhysioNet subjects to use (default: all 109)")
+    p.add_argument(
+        "--backbone",
+        default="vit_tiny_patch16_224",
+        choices=list(_BACKBONE_SHORT.keys()),
+        help="timm backbone model name",
+    )
+    p.add_argument(
+        "--data",
+        default="real",
+        choices=["real", "synthetic"],
+        help="'real' downloads PhysioNet MMIDB; 'synthetic' uses generated data (fast, for smoke tests)",
+    )
     return p.parse_args()
 
 
-def setup_logging(run_dir: Path) -> logging.Logger:
+def setup_logging(run_dir: Path, log_name: str) -> logging.Logger:
     fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
                         stream=sys.stdout)
@@ -54,28 +81,62 @@ def setup_logging(run_dir: Path) -> logging.Logger:
         logging.getLogger(lib).setLevel(logging.ERROR)
     log = logging.getLogger("stage_08")
     run_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(run_dir / "stage_08_pretrain.log")
+    fh = logging.FileHandler(run_dir / log_name)
     fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
     log.addHandler(fh)
     return log
 
 
-def main() -> None:
-    args = parse_args()
-    run_dir = Path(args.run_dir)
-    log = setup_logging(run_dir)
+def save_pretrain_plot(train_result, plots_dir: Path, tag: str) -> None:
+    """Save training loss + val accuracy curves for the pretraining run."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    checkpoint_path = run_dir / "checkpoints" / "vit_pretrained_physionet.pt"
-    out_path        = run_dir / "results"     / "real_pretrain_physionet.json"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    history = train_result.history
+
+    epochs_range = [r.epoch for r in history]
+    train_losses = [r.train_loss for r in history]
+    val_losses   = [r.val_loss   for r in history]
+    val_accs     = [r.val_accuracy for r in history]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].plot(epochs_range, train_losses, label="Train Loss")
+    axes[0].plot(epochs_range, val_losses,   label="Val Loss")
+    axes[0].axvline(x=train_result.best_epoch, color="green", linestyle="--",
+                    alpha=0.7, label=f"Best epoch {train_result.best_epoch}")
+    axes[0].set_xlabel("Epoch"); axes[0].set_ylabel("Loss")
+    axes[0].set_title(f"{tag} – Loss"); axes[0].legend(); axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(epochs_range, val_accs, label="Val Accuracy", color="orange")
+    axes[1].axvline(x=train_result.best_epoch, color="green", linestyle="--",
+                    alpha=0.7, label=f"Best: {train_result.best_val_accuracy:.1f}%")
+    axes[1].set_xlabel("Epoch"); axes[1].set_ylabel("Accuracy (%)")
+    axes[1].set_title(f"{tag} – Val Accuracy"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    fig.savefig(plots_dir / f"{tag}_curves.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    args     = parse_args()
+    run_dir  = Path(args.run_dir)
+    backbone = args.backbone
+    bshort   = _BACKBONE_SHORT.get(backbone, backbone)
+    log      = setup_logging(run_dir, f"stage_08_pretrain_{bshort}.log")
+    log.info("Backbone: %s  (short: %s)", backbone, bshort)
+
+    checkpoint_path = run_dir / "checkpoints" / f"vit_pretrained_physionet_{bshort}.pt"
+    out_path        = run_dir / "results"     / f"real_pretrain_physionet_{bshort}.json"
+    plots_dir       = run_dir / "plots"       / f"stage_08_{bshort}"
 
     if checkpoint_path.exists() and out_path.exists():
         log.info("Checkpoint and results already exist – skipping Stage 8.")
         return
 
-    import mne
     import torch
-    from moabb.datasets import PhysionetMI
-    from moabb.paradigms import LeftRightImagery
     from torch.utils.data import DataLoader, TensorDataset
 
     from bci.data.transforms import CWTSpectrogramTransform
@@ -85,35 +146,48 @@ def main() -> None:
     from bci.utils.config import ModelConfig, SpectrogramConfig
     from bci.utils.seed import get_device, set_seed
 
-    mne.set_log_level("ERROR")
     device = get_device(args.device)
     log.info("Device: %s", device)
     set_seed(args.seed)
 
-    # ── Load PhysioNet ─────────────────────────────────────────────────────
-    log.info("Loading PhysioNet MMIDB (n_subjects=%s)...", args.n_subjects)
-    dataset  = PhysionetMI()
-    paradigm = LeftRightImagery(fmin=4.0, fmax=40.0, resample=128.0)
-    subjects = dataset.subject_list
-    if args.n_subjects is not None:
-        subjects = subjects[: args.n_subjects]
-
-    all_X_list, all_y_list = [], []
     channel_names = ["C3", "Cz", "C4"]
-    for sid in subjects:
-        try:
-            X, y_labels, _ = paradigm.get_data(dataset=dataset, subjects=[sid])
-            classes = sorted(np.unique(y_labels))
-            label_map = {c: i for i, c in enumerate(classes)}
-            y = np.array([label_map[lb] for lb in y_labels], dtype=np.int64)
-            all_X_list.append(X.astype(np.float32))
-            all_y_list.append(y)
-            log.info("  Subject %d: X=%s", sid, X.shape)
-        except Exception as e:
-            log.warning("  Subject %d skipped: %s", sid, e)
+
+    if args.data == "synthetic":
+        # ── Synthetic source data ──────────────────────────────────────────
+        log.info("Using synthetic data for pretraining (smoke-test mode).")
+        from bci.training.cross_validation import make_synthetic_subject_data
+        subject_data = make_synthetic_subject_data(n_subjects=5, seed=args.seed)
+        all_X_list = [X for X, _ in subject_data.values()]
+        all_y_list = [y for _, y in subject_data.values()]
+    else:
+        # ── Load PhysioNet ─────────────────────────────────────────────────
+        import mne
+        from moabb.datasets import PhysionetMI
+        from moabb.paradigms import LeftRightImagery
+
+        mne.set_log_level("ERROR")
+        log.info("Loading PhysioNet MMIDB (n_subjects=%s)...", args.n_subjects)
+        dataset  = PhysionetMI()
+        paradigm = LeftRightImagery(fmin=4.0, fmax=40.0, resample=128.0)
+        subjects = dataset.subject_list
+        if args.n_subjects is not None:
+            subjects = subjects[: args.n_subjects]
+
+        all_X_list, all_y_list = [], []
+        for sid in subjects:
+            try:
+                X, y_labels, _ = paradigm.get_data(dataset=dataset, subjects=[sid])
+                classes = sorted(np.unique(y_labels))
+                label_map = {c: i for i, c in enumerate(classes)}
+                y = np.array([label_map[lb] for lb in y_labels], dtype=np.int64)
+                all_X_list.append(X.astype(np.float32))
+                all_y_list.append(y)
+                log.info("  Subject %d: X=%s", sid, X.shape)
+            except Exception as e:
+                log.warning("  Subject %d skipped: %s", sid, e)
 
     if not all_X_list:
-        log.error("No PhysioNet data loaded. Exiting.")
+        log.error("No source data loaded. Exiting.")
         sys.exit(1)
 
     all_X = np.concatenate(all_X_list, axis=0)
@@ -151,7 +225,7 @@ def main() -> None:
 
     # ── Model + training ───────────────────────────────────────────────────
     model_config = ModelConfig(
-        vit_model_name="efficientnet_b0", vit_pretrained=True,
+        vit_model_name=backbone, vit_pretrained=True,
         vit_drop_rate=0.1, n_classes=2,
     )
     model   = ViTBranch(config=model_config, as_feature_extractor=False)
@@ -170,9 +244,19 @@ def main() -> None:
         seed=args.seed, num_workers=0,
     )
     t0 = time.time()
-    trainer.fit(train_ds, forward_fn=fwd, model_tag="vit_pretrain")
+    train_result = trainer.fit(
+        train_ds, forward_fn=fwd,
+        model_tag=f"{bshort}_pretrain",
+    )
     elapsed = time.time() - t0
     log.info("Pretraining done in %.1fs", elapsed)
+
+    # Save pretraining curves plot
+    try:
+        save_pretrain_plot(train_result, plots_dir, f"pretrain_{bshort}")
+        log.info("Plots saved: %s", plots_dir)
+    except Exception as e:
+        log.warning("Pretrain plot save failed: %s", e)
 
     # Validation metrics
     val_loader = DataLoader(val_ds, batch_size=args.batch_size * 2,
@@ -188,6 +272,7 @@ def main() -> None:
 
     results = {
         "phase": "pretrain",
+        "backbone": backbone,
         "source": "real_physionet",
         "n_subjects": len(all_X_list),
         "val_accuracy": metrics["accuracy"],

@@ -57,7 +57,7 @@ class TestViTPretraining:
         assert out.shape == (4, 2), f"Expected (4,2), got {out.shape}"
 
     def test_vit_branch_as_feature_extractor(self):
-        """ViTBranch with as_feature_extractor=True outputs (B, 1280) features (EfficientNet-B0)."""
+        """ViTBranch with as_feature_extractor=True outputs (B, 192) features (ViT-Tiny default)."""
         from bci.models.vit_branch import ViTBranch
         from bci.utils.config import ModelConfig
 
@@ -65,7 +65,7 @@ class TestViTPretraining:
         model = ViTBranch(config=cfg, as_feature_extractor=True)
         imgs = torch.rand(4, 3, 224, 224)
         out = model(imgs)
-        assert out.shape == (4, 1280), f"Expected (4,1280), got {out.shape}"
+        assert out.shape == (4, 192), f"Expected (4,192), got {out.shape}"
 
     def test_pretrain_saves_checkpoint(self):
         """pretrain_vit saves a .pt file that can be loaded."""
