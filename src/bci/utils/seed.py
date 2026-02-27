@@ -67,7 +67,7 @@ def get_device(preference: str = "auto") -> torch.device:
         logger.info(
             "  GPU: %s (%.1f GB)",
             torch.cuda.get_device_name(0),
-            torch.cuda.get_device_properties(0).total_mem / 1e9,
+            torch.cuda.get_device_properties(0).total_memory / 1e9,
         )
 
     return device
