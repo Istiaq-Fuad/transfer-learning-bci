@@ -66,6 +66,7 @@ MODEL_NAME = "DualBranch-Transfer"
 # Real BCI IV-2a loader
 # ---------------------------------------------------------------------------
 
+
 def load_bci_iv2a(data_dir: str, sfreq: float = 128.0) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     import mne
     from moabb.datasets import BNCI2014_001
@@ -93,6 +94,7 @@ def load_bci_iv2a(data_dir: str, sfreq: float = 128.0) -> dict[int, tuple[np.nda
 # ---------------------------------------------------------------------------
 # Condition: how to initialise ViT
 # ---------------------------------------------------------------------------
+
 
 def _build_model(
     condition: str,
@@ -131,25 +133,22 @@ def _build_model(
     if condition == "transfer":
         if checkpoint_path is None or not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"Transfer condition requires a checkpoint. "
-                f"Path not found: {checkpoint_path}"
+                f"Transfer condition requires a checkpoint. Path not found: {checkpoint_path}"
             )
-        # Load EEG-pretrained weights into ViT branch
-        # The checkpoint was saved from ViTBranch (as_feature_extractor=False),
-        # so the head is a 2-class Linear. We load everything except the head
-        # to stay compatible with the Identity head in DualBranchModel.
+        # Load EEG-pretrained weights into ViT backbone.
+        # The checkpoint was saved with model.backbone.state_dict() from
+        # pretrain_physionet.py, so keys match model.vit_branch.backbone directly.
+        # We filter out the classification head to stay compatible with the
+        # Identity head in the feature-extractor configuration.
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        # Filter out the classification head (not used in feature-extractor mode)
-        backbone_state = {
-            k: v for k, v in ckpt.items()
-            if not k.startswith("backbone.head")
-        }
+        backbone_state = {k: v for k, v in ckpt.items() if not k.startswith("head")}
         missing, unexpected = model.vit_branch.backbone.load_state_dict(
             backbone_state, strict=False
         )
         logger.info(
             "Loaded EEG-pretrained ViT weights: %d missing, %d unexpected keys",
-            len(missing), len(unexpected),
+            len(missing),
+            len(unexpected),
         )
         # Freeze backbone (unfreeze last N blocks + head)
         model.freeze_vit_backbone(unfreeze_last_n_blocks=unfreeze_last_n)
@@ -165,6 +164,7 @@ def _build_model(
 # ---------------------------------------------------------------------------
 # Per-fold training
 # ---------------------------------------------------------------------------
+
 
 def _train_and_eval_fold(
     fold_idx: int,
@@ -189,9 +189,7 @@ def _train_and_eval_fold(
     set_seed(seed + fold_idx)
 
     # Build fold datasets
-    train_ds, test_ds, math_input_dim = builder.build_fold(
-        X_train, y_train, X_test, y_test
-    )
+    train_ds, test_ds, math_input_dim = builder.build_fold(X_train, y_train, X_test, y_test)
 
     # Build model for this condition
     model = _build_model(
@@ -217,7 +215,7 @@ def _train_and_eval_fold(
         batch_size=batch_size,
         warmup_epochs=warmup_epochs,
         patience=patience,
-        label_smoothing=0.1,
+        label_smoothing=0.05,
         val_fraction=0.2,
         seed=seed,
         num_workers=0,
@@ -228,9 +226,7 @@ def _train_and_eval_fold(
         model_tag=f"{condition}_fold{fold_idx}",
     )
 
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0
-    )
+    test_loader = DataLoader(test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
     y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_fwd)
     m = compute_metrics(y_test, y_pred, y_prob)
 
@@ -251,7 +247,8 @@ def _train_and_eval_fold(
         condition.upper(),
         fold_idx,
         f"{subject_id:02d}" if subject_id is not None else "??",
-        result.accuracy, result.kappa,
+        result.accuracy,
+        result.kappa,
     )
     return result
 
@@ -259,6 +256,7 @@ def _train_and_eval_fold(
 # ---------------------------------------------------------------------------
 # Within-subject CV for one condition
 # ---------------------------------------------------------------------------
+
 
 def run_condition(
     condition: str,
@@ -274,17 +272,19 @@ def run_condition(
     for subj_id, (X, y) in sorted(subject_data.items()):
         logger.info(
             "[%s] Within-subject CV: S%02d (%d trials)...",
-            condition.upper(), subj_id, len(y),
+            condition.upper(),
+            subj_id,
+            len(y),
         )
-        skf = StratifiedKFold(
-            n_splits=n_folds, shuffle=True, random_state=kwargs["seed"]
-        )
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=kwargs["seed"])
         for train_idx, test_idx in skf.split(X, y):
             fr = _train_and_eval_fold(
                 fold_idx=fold_counter,
                 subject_id=subj_id,
-                X_train=X[train_idx], y_train=y[train_idx],
-                X_test=X[test_idx],   y_test=y[test_idx],
+                X_train=X[train_idx],
+                y_train=y[train_idx],
+                X_test=X[test_idx],
+                y_test=y[test_idx],
                 condition=condition,
                 checkpoint_path=checkpoint_path,
                 builder=builder,
@@ -296,8 +296,10 @@ def run_condition(
         subj_accs = [f.accuracy for f in all_folds if f.subject == subj_id]
         logger.info(
             "  [%s] S%02d: mean=%.2f%% ± %.2f%%",
-            condition.upper(), subj_id,
-            float(np.mean(subj_accs)), float(np.std(subj_accs)),
+            condition.upper(),
+            subj_id,
+            float(np.mean(subj_accs)),
+            float(np.std(subj_accs)),
         )
 
     return CVResult(
@@ -310,6 +312,7 @@ def run_condition(
 # ---------------------------------------------------------------------------
 # Printing + saving
 # ---------------------------------------------------------------------------
+
 
 def print_comparison_table(results: dict[str, CVResult]) -> None:
     print("\n" + "=" * 70)
@@ -356,13 +359,10 @@ def save_condition_results(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Phase 3 Step 2: Transfer Learning Fine-tuning"
-    )
-    parser.add_argument(
-        "--data", choices=["synthetic", "real"], default="synthetic"
-    )
+    parser = argparse.ArgumentParser(description="Phase 3 Step 2: Transfer Learning Fine-tuning")
+    parser.add_argument("--data", choices=["synthetic", "real"], default="synthetic")
     parser.add_argument("--data-dir", default="~/mne_data")
     parser.add_argument(
         "--checkpoint",
@@ -378,7 +378,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--fusion",
-        choices=["attention", "concat", "gated"],
+        choices=["attention", "gated"],
         default="attention",
     )
     parser.add_argument("--n-subjects", type=int, default=3)
@@ -465,8 +465,10 @@ def main() -> None:
         elapsed = time.time() - t0
         logger.info(
             "[%s] Done in %.1fs | acc=%.2f%% ± %.2f%%",
-            condition.upper(), elapsed,
-            result.mean_accuracy, result.std_accuracy,
+            condition.upper(),
+            elapsed,
+            result.mean_accuracy,
+            result.std_accuracy,
         )
         all_results[condition] = result
         save_condition_results(condition, result, output_dir)

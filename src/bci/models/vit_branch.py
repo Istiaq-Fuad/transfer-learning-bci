@@ -1,6 +1,6 @@
 """Image backbone branch for spectrogram-based classification.
 
-Supports ViT and EfficientNet (and any other timm model) as feature extractors.
+Supports any timm model as a feature extractor or standalone classifier.
 The backbone processes CWT spectrogram images of EEG signals.
 
 Architecture (feature-extractor mode):
@@ -8,7 +8,6 @@ Architecture (feature-extractor mode):
     -> timm backbone (pretrained)
     -> Feature vector of dim `feature_dim`
        - ViT-Tiny (default)  -> 192
-       - EfficientNet-B0     -> 1280  (use EfficientNetBranch instead)
 
 Canonical architecture constants for ViT-Tiny
 (used by pipeline stages and run_all.sh to avoid magic numbers):
@@ -56,6 +55,7 @@ MODEL_NAME: str = "vit_tiny_patch16_224"
 # in a model-agnostic way.
 # ---------------------------------------------------------------------------
 
+
 def _get_classifier_attr(backbone: nn.Module) -> str | None:
     """Return the name of the classification head attribute, or None."""
     for attr in ("head", "classifier", "fc", "head_fc"):
@@ -84,7 +84,6 @@ def _get_block_list(backbone: nn.Module) -> list[nn.Module]:
     """Return the list of backbone blocks for partial un-freezing.
 
     - ViT-style models expose `backbone.blocks` (ModuleList of transformer blocks)
-    - EfficientNet exposes `backbone.blocks` (Sequential of MBConv stages)
     - Falls back to `backbone.features` then an empty list if not found.
     """
     if hasattr(backbone, "blocks"):
@@ -100,11 +99,9 @@ def _get_block_list(backbone: nn.Module) -> list[nn.Module]:
 # Main module
 # ---------------------------------------------------------------------------
 
+
 class ViTBranch(nn.Module):
     """Timm-based image feature extractor for EEG spectrograms.
-
-    Despite the name (kept for backward compatibility), this class supports
-    any timm backbone — ViT, EfficientNet, ResNet, etc.
 
     Loads a pretrained backbone and replaces the classification head with
     either an identity (for feature extraction) or a new linear classifier.
@@ -129,6 +126,7 @@ class ViTBranch(nn.Module):
             self.config.vit_model_name,
             pretrained=self.config.vit_pretrained,
             drop_rate=self.config.vit_drop_rate,
+            in_chans=self.config.in_chans,
         )
 
         # Detect the classification head attribute and feature dimension
@@ -147,17 +145,22 @@ class ViTBranch(nn.Module):
             setattr(self.backbone, head_attr, nn.Identity())
             logger.info(
                 "Image branch (feature extractor): %s [head=%s], feature_dim=%d",
-                self.config.vit_model_name, head_attr, self.feature_dim,
+                self.config.vit_model_name,
+                head_attr,
+                self.feature_dim,
             )
         else:
             # Attach a new classification head
             setattr(
-                self.backbone, head_attr,
+                self.backbone,
+                head_attr,
                 nn.Linear(self.feature_dim, self.config.n_classes),
             )
             logger.info(
                 "Image branch (classifier): %s [head=%s], n_classes=%d",
-                self.config.vit_model_name, head_attr, self.config.n_classes,
+                self.config.vit_model_name,
+                head_attr,
+                self.config.n_classes,
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -176,7 +179,6 @@ class ViTBranch(nn.Module):
         """Freeze backbone parameters for transfer learning.
 
         Keeps the last N blocks and the classification head unfrozen.
-        Works for both ViT (backbone.blocks) and EfficientNet (backbone.features).
 
         Args:
             unfreeze_last_n_blocks: Number of backbone blocks from the end
@@ -210,17 +212,13 @@ class ViTBranch(nn.Module):
             for param in self.backbone.norm.parameters():
                 param.requires_grad = True
 
-        # EfficientNet-specific: unfreeze bn2 / conv_head after last block
-        for attr in ("conv_head", "bn2"):
-            if hasattr(self.backbone, attr):
-                for param in getattr(self.backbone, attr).parameters():
-                    param.requires_grad = True
-
         frozen = sum(1 for p in self.backbone.parameters() if not p.requires_grad)
-        total  = sum(1 for p in self.backbone.parameters())
+        total = sum(1 for p in self.backbone.parameters())
         logger.info(
             "Frozen %d/%d parameters (unfroze last %d blocks + head)",
-            frozen, total, unfreeze_last_n_blocks,
+            frozen,
+            total,
+            unfreeze_last_n_blocks,
         )
 
     def get_backbone_params(self) -> list[nn.Parameter]:

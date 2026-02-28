@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 # Spectrogram helpers
 # ---------------------------------------------------------------------------
 
+
 def _epochs_to_images(
     X: np.ndarray,
     channel_names: list[str],
@@ -90,6 +91,7 @@ def build_image_dataset(
 # Real PhysioNet loader
 # ---------------------------------------------------------------------------
 
+
 def load_physionet_data(
     n_subjects: int | None,
     sfreq: float = 128.0,
@@ -107,7 +109,7 @@ def load_physionet_data(
 
     mne.set_log_level("ERROR")
     dataset = PhysionetMI()
-    paradigm = LeftRightImagery(fmin=4.0, fmax=40.0, resample=sfreq)
+    paradigm = LeftRightImagery(fmin=8.0, fmax=32.0, resample=sfreq)
 
     subjects = dataset.subject_list
     if n_subjects is not None:
@@ -134,6 +136,7 @@ def load_physionet_data(
 # Pretraining loop (subject-pooled split)
 # ---------------------------------------------------------------------------
 
+
 def pretrain_vit(
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]],
     channel_names: list[str],
@@ -159,9 +162,7 @@ def pretrain_vit(
     # Pool all subjects
     all_X = np.concatenate([X for X, _ in subject_data.values()], axis=0)
     all_y = np.concatenate([y for _, y in subject_data.values()], axis=0)
-    logger.info(
-        "Pooled source data: %d trials, classes=%s", len(all_y), np.unique(all_y)
-    )
+    logger.info("Pooled source data: %d trials, classes=%s", len(all_y), np.unique(all_y))
 
     # Shuffle
     rng = np.random.default_rng(seed)
@@ -178,7 +179,7 @@ def pretrain_vit(
 
     # Build datasets
     train_ds = build_image_dataset(X_train, y_train, channel_names, sfreq, spec_config)
-    val_ds   = build_image_dataset(X_val, y_val, channel_names, sfreq, spec_config)
+    val_ds = build_image_dataset(X_val, y_val, channel_names, sfreq, spec_config)
 
     # Build ViT classifier (NOT as feature extractor — has classification head)
     model_config = ModelConfig(
@@ -193,7 +194,7 @@ def pretrain_vit(
 
     def forward_fn(batch):
         imgs, labels = batch
-        imgs   = imgs.to(_device)
+        imgs = imgs.to(_device)
         labels = labels.to(_device)
         return model(imgs), labels
 
@@ -206,7 +207,7 @@ def pretrain_vit(
         batch_size=batch_size,
         warmup_epochs=warmup_epochs,
         patience=patience,
-        label_smoothing=0.1,
+        label_smoothing=0.05,
         val_fraction=0.2,
         seed=seed,
         num_workers=0,
@@ -223,12 +224,15 @@ def pretrain_vit(
     metrics = compute_metrics(y_val, y_pred, y_prob)
     logger.info(
         "Pretrain val accuracy: %.2f%%  kappa=%.3f",
-        metrics["accuracy"], metrics["kappa"],
+        metrics["accuracy"],
+        metrics["kappa"],
     )
 
-    # Save ViT branch weights
+    # Save ViT backbone weights only (without the classifier head keys prefix)
+    # so that finetune_bci_iv2a.py can load them directly into
+    # model.vit_branch.backbone without key-stripping.
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), checkpoint_path)
+    torch.save(model.backbone.state_dict(), checkpoint_path)
     logger.info("ViT pretrained weights saved to %s", checkpoint_path)
 
     return {
@@ -247,10 +251,9 @@ def pretrain_vit(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Phase 3 Step 1: Pretrain ViT on source dataset"
-    )
+    parser = argparse.ArgumentParser(description="Phase 3 Step 1: Pretrain ViT on source dataset")
     parser.add_argument(
         "--data",
         choices=["synthetic", "real"],
@@ -297,7 +300,7 @@ def main() -> None:
     device = get_device(args.device)
 
     logger.info("=" * 60)
-    logger.info("Phase 3 – ViT Pretraining")
+    logger.info("Phase 3 – ViT Pretraining  [filter: 8–32 Hz]")
     logger.info("  Source data:   %s", args.data)
     logger.info("  N subjects:    %d", args.n_subjects)
     logger.info("  Epochs:        %d (patience=%d)", args.epochs, args.patience)
@@ -309,8 +312,12 @@ def main() -> None:
 
     # Spectrogram config
     spec_config = SpectrogramConfig(
-        wavelet="morl", freq_min=4.0, freq_max=40.0,
-        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+        wavelet="morl",
+        freq_min=8.0,
+        freq_max=32.0,
+        n_freqs=64,
+        image_size=(224, 224),
+        channel_mode="rgb_c3_cz_c4",
     )
 
     # Load source data

@@ -2,22 +2,13 @@
 
 The complete architecture for MI-EEG classification:
 
-    Branch A (image): CWT Spectrogram -> image backbone -> feature vector
-        - ViT-Tiny          -> 192-dim features  (default)
-        - EfficientNet-B0   -> 1280-dim features
-
+    Branch A (image): CWT Spectrogram -> ViT-Tiny -> 192-dim features
     Branch B (math):  CSP + Riemannian features -> MLP -> 128-dim features
 
-    Fusion: Attention-based fusion -> fused_dim (128 for ViT, 256 for EfficientNet)
+    Fusion: Attention-based fusion -> fused_dim (128)
     Classifier: MLP(fused_dim -> classifier_hidden_dim -> 2) -> Softmax
 
-The image branch class is selected automatically from ``config.vit_model_name``:
-    - ``"efficientnet_b0"`` -> :class:`EfficientNetBranch`
-    - anything else         -> :class:`ViTBranch`
-
-The attribute ``self.vit_branch`` is kept for both backbones for backward
-compatibility with checkpoint loading code that accesses
-``model.vit_branch.backbone``.
+The image branch is always :class:`ViTBranch` and stored as ``self.vit_branch``.
 """
 
 from __future__ import annotations
@@ -27,7 +18,6 @@ import logging
 import torch
 import torch.nn as nn
 
-from bci.models.efficientnet_branch import EfficientNetBranch
 from bci.models.fusion import create_fusion
 from bci.models.math_branch import MathBranch
 from bci.models.vit_branch import ViTBranch
@@ -71,15 +61,10 @@ class ClassifierHead(nn.Module):
 class DualBranchModel(nn.Module):
     """Full dual-branch model for MI-EEG classification.
 
-    Combines an image backbone spectrogram branch with a handcrafted feature
-    branch, fuses them with attention (or concat / gated), and classifies.
+    Combines a ViT-Tiny spectrogram branch with a handcrafted feature branch,
+    fuses them with attention (or concat / gated), and classifies.
 
-    The image branch class is chosen from ``config.vit_model_name``:
-        - ``"efficientnet_b0"`` -> :class:`EfficientNetBranch`
-        - anything else         -> :class:`ViTBranch`
-
-    The branch is always stored as ``self.vit_branch`` for backward
-    compatibility with checkpoint loading code.
+    The image branch is always :class:`ViTBranch`, stored as ``self.vit_branch``.
 
     Args:
         math_input_dim: Dimensionality of the handcrafted feature vector
@@ -95,22 +80,16 @@ class DualBranchModel(nn.Module):
         super().__init__()
         self.config = config or ModelConfig()
 
-        # Branch A: image backbone for spectrograms.
-        # Select the dedicated branch class based on the configured model name.
-        # The attribute is always named `vit_branch` for backward compatibility
-        # with checkpoint loading (model.vit_branch.backbone).
-        _BranchCls = (
-            EfficientNetBranch
-            if self.config.vit_model_name == "efficientnet_b0"
-            else ViTBranch
-        )
-        self.vit_branch = _BranchCls(
-            config=self.config, as_feature_extractor=True,
+        # Branch A: ViT-Tiny image backbone for spectrograms.
+        self.vit_branch = ViTBranch(
+            config=self.config,
+            as_feature_extractor=True,
         )
 
         # Branch B: MLP for handcrafted features
         self.math_branch = MathBranch(
-            input_dim=math_input_dim, config=self.config,
+            input_dim=math_input_dim,
+            config=self.config,
         )
 
         # Fusion layer
@@ -132,7 +111,8 @@ class DualBranchModel(nn.Module):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         logger.info(
             "DualBranchModel: %d total params (%d trainable)",
-            total_params, trainable_params,
+            total_params,
+            trainable_params,
         )
 
     def forward(
@@ -166,8 +146,7 @@ class DualBranchModel(nn.Module):
     def freeze_vit_backbone(self, unfreeze_last_n_blocks: int = 2) -> None:
         """Freeze the image backbone for transfer learning.
 
-        Delegates to the underlying branch's ``freeze_backbone`` method,
-        which handles both ViT and EfficientNet architectures.
+        Delegates to the ViT branch's ``freeze_backbone`` method.
 
         Args:
             unfreeze_last_n_blocks: Number of backbone blocks to keep trainable.

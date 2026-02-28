@@ -27,7 +27,7 @@ def test_config() -> bool:
     config = load_config()
     assert isinstance(config, ExperimentConfig)
     assert config.dataset.name == "bci_iv2a"
-    assert config.model.vit_model_name == "efficientnet_b0"
+    assert config.model.vit_model_name == "vit_tiny_patch16_224"
     logger.info("  Config: OK (name=%s)", config.name)
     return True
 
@@ -147,7 +147,8 @@ def test_vit_branch() -> bool:
     assert features.shape == (2, model.feature_dim)
     logger.info(
         "  ViT Branch: OK (output=%s, params=%dk)",
-        features.shape, model.get_num_params(trainable_only=False) // 1000,
+        features.shape,
+        model.get_num_params(trainable_only=False) // 1000,
     )
 
     return True

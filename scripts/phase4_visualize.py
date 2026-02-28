@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _save(fig, path: Path, dpi: int = 150) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
@@ -56,6 +57,7 @@ def _load_summary(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 # Figure 1: CWT Spectrogram Examples
 # ---------------------------------------------------------------------------
+
 
 def plot_spectrogram_examples(
     data_dir: str,
@@ -85,27 +87,53 @@ def plot_spectrogram_examples(
     label_map = {c: i for i, c in enumerate(classes)}
     y = np.array([label_map[lb] for lb in y_labels])
 
-    channel_names = paradigm.get_data(
-        dataset=dataset, subjects=[1], return_epochs=True
-    )[0].ch_names if hasattr(paradigm, "_get_epochs") else [
-        "Fz", "FC3", "FC1", "FCz", "FC2", "FC4",
-        "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
-        "CP3", "CP1", "CPz", "CP2", "CP4",
-        "P1", "Pz", "P2", "POz"
-    ]
+    channel_names = (
+        paradigm.get_data(dataset=dataset, subjects=[1], return_epochs=True)[0].ch_names
+        if hasattr(paradigm, "_get_epochs")
+        else [
+            "Fz",
+            "FC3",
+            "FC1",
+            "FCz",
+            "FC2",
+            "FC4",
+            "C5",
+            "C3",
+            "C1",
+            "Cz",
+            "C2",
+            "C4",
+            "C6",
+            "CP3",
+            "CP1",
+            "CPz",
+            "CP2",
+            "CP4",
+            "P1",
+            "Pz",
+            "P2",
+            "POz",
+        ]
+    )
 
     config = SpectrogramConfig(
-        wavelet="morl", freq_min=4.0, freq_max=40.0,
-        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+        wavelet="morl",
+        freq_min=4.0,
+        freq_max=40.0,
+        n_freqs=64,
+        image_size=(224, 224),
+        channel_mode="rgb_c3_cz_c4",
     )
     transform = CWTSpectrogramTransform(config)
 
     # Pick examples
-    left_idx  = np.where(y == 0)[0][:n_examples]
+    left_idx = np.where(y == 0)[0][:n_examples]
     right_idx = np.where(y == 1)[0][:n_examples]
 
     fig, axes = plt.subplots(
-        2, n_examples, figsize=(4 * n_examples, 8),
+        2,
+        n_examples,
+        figsize=(4 * n_examples, 8),
         constrained_layout=True,
     )
     fig.suptitle("CWT Spectrogram Examples (C3→R, Cz→G, C4→B)", fontsize=14)
@@ -133,6 +161,7 @@ def plot_spectrogram_examples(
 # Figure 2: Accuracy vs Training Data Fraction
 # ---------------------------------------------------------------------------
 
+
 def plot_reduced_data_curves(summary: dict, output_path: Path) -> None:
     """Plot accuracy vs fraction of training data for transfer vs scratch."""
     import matplotlib.pyplot as plt
@@ -159,7 +188,7 @@ def plot_reduced_data_curves(summary: dict, output_path: Path) -> None:
             frac_str = f"{frac:.2f}"
             d = frac_data.get(frac_str, {})
             mean = d.get("mean_accuracy", float("nan"))
-            std  = d.get("std_accuracy",  float("nan"))
+            std = d.get("std_accuracy", float("nan"))
             xs.append(frac * 100)
             ys.append(mean)
             errs.append(std)
@@ -169,20 +198,25 @@ def plot_reduced_data_curves(summary: dict, output_path: Path) -> None:
         errs_arr = np.array(errs)
         valid = ~np.isnan(ys_arr)
 
-        color  = colors.get(cond, "gray")
+        color = colors.get(cond, "gray")
         marker = markers.get(cond, "o")
-        label  = labels.get(cond, cond.upper())
+        label = labels.get(cond, cond.upper())
 
         ax.plot(
-            xs_arr[valid], ys_arr[valid],
-            color=color, marker=marker, linewidth=2, markersize=8,
+            xs_arr[valid],
+            ys_arr[valid],
+            color=color,
+            marker=marker,
+            linewidth=2,
+            markersize=8,
             label=label,
         )
         ax.fill_between(
             xs_arr[valid],
             ys_arr[valid] - errs_arr[valid],
             ys_arr[valid] + errs_arr[valid],
-            color=color, alpha=0.15,
+            color=color,
+            alpha=0.15,
         )
 
     ax.axhline(50, color="gray", linestyle="--", linewidth=1, label="Chance (50%)")
@@ -202,18 +236,18 @@ def plot_reduced_data_curves(summary: dict, output_path: Path) -> None:
 # Figure 3: Fusion Method Ablation Bar Chart
 # ---------------------------------------------------------------------------
 
+
 def plot_fusion_ablation(summary: dict, output_path: Path) -> None:
-    """Bar chart comparing attention / concat / gated fusion methods."""
+    """Bar chart comparing attention / gated fusion methods."""
     import matplotlib.pyplot as plt
 
     dual = summary.get("dual_branch", {})
-    methods = ["attention", "concat", "gated"]
+    methods = ["attention", "gated"]
     labels_map = {
         "attention": "Attention\nFusion",
-        "concat":    "Concat\nFusion",
-        "gated":     "Gated\nFusion",
+        "gated": "Gated\nFusion",
     }
-    colors = ["#2ecc71", "#3498db", "#9b59b6"]
+    colors = ["#2ecc71", "#9b59b6"]
 
     accs, stds, names = [], [], []
     for m in methods:
@@ -229,8 +263,16 @@ def plot_fusion_ablation(summary: dict, output_path: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(6, 4))
     x = np.arange(len(names))
-    bars = ax.bar(x, accs, yerr=stds, capsize=6, color=colors[:len(names)],
-                  alpha=0.85, edgecolor="black", linewidth=0.8)
+    bars = ax.bar(
+        x,
+        accs,
+        yerr=stds,
+        capsize=6,
+        color=colors[: len(names)],
+        alpha=0.85,
+        edgecolor="black",
+        linewidth=0.8,
+    )
 
     # Value labels
     for bar, acc in zip(bars, accs):
@@ -239,7 +281,10 @@ def plot_fusion_ablation(summary: dict, output_path: Path) -> None:
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + 1,
                 f"{acc:.1f}%",
-                ha="center", va="bottom", fontsize=10, fontweight="bold",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
             )
 
     ax.set_xticks(x)
@@ -256,6 +301,7 @@ def plot_fusion_ablation(summary: dict, output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Figure 4: Per-Subject Accuracy Heatmap
 # ---------------------------------------------------------------------------
+
 
 def plot_per_subject_heatmap(summary: dict, output_path: Path) -> None:
     """Heatmap: rows=model, cols=subject, cells=accuracy."""
@@ -291,13 +337,7 @@ def plot_per_subject_heatmap(summary: dict, output_path: Path) -> None:
         return
 
     # Build matrix
-    all_subjects = sorted(
-        set(
-            int(sid)
-            for _, ps in model_rows
-            for sid in ps.keys()
-        )
-    )
+    all_subjects = sorted(set(int(sid) for _, ps in model_rows for sid in ps.keys()))
     matrix = np.full((len(model_rows), len(all_subjects)), np.nan)
     for row_i, (_, ps) in enumerate(model_rows):
         for col_j, sid in enumerate(all_subjects):
@@ -305,9 +345,7 @@ def plot_per_subject_heatmap(summary: dict, output_path: Path) -> None:
             if val is not None:
                 matrix[row_i, col_j] = float(val)
 
-    fig, ax = plt.subplots(
-        figsize=(max(8, len(all_subjects) * 0.9), max(4, len(model_rows) * 0.8))
-    )
+    fig, ax = plt.subplots(figsize=(max(8, len(all_subjects) * 0.9), max(4, len(model_rows) * 0.8)))
     im = ax.imshow(matrix, aspect="auto", cmap="RdYlGn", vmin=40, vmax=100)
     plt.colorbar(im, ax=ax, label="Accuracy (%)")
 
@@ -323,9 +361,13 @@ def plot_per_subject_heatmap(summary: dict, output_path: Path) -> None:
             val = matrix[i, j]
             if not np.isnan(val):
                 ax.text(
-                    j, i, f"{val:.0f}",
-                    ha="center", va="center",
-                    fontsize=8, color="black",
+                    j,
+                    i,
+                    f"{val:.0f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="black",
                 )
 
     _save(fig, output_path)
@@ -336,17 +378,17 @@ def plot_per_subject_heatmap(summary: dict, output_path: Path) -> None:
 # Figure 5: Baseline Comparison Bar Chart
 # ---------------------------------------------------------------------------
 
+
 def plot_baseline_comparison(summary: dict, output_path: Path) -> None:
     """Bar chart comparing all models on within-subject accuracy."""
     import matplotlib.pyplot as plt
 
     entries = [
-        ("CSP+LDA",        summary.get("baselines", {}).get("csp_lda"),        "#e74c3c"),
-        ("Riemannian+LDA", summary.get("baselines", {}).get("riemannian"),      "#e67e22"),
-        ("ViT-Only",       summary.get("baselines", {}).get("vit_only"),        "#f1c40f"),
+        ("CSP+LDA", summary.get("baselines", {}).get("csp_lda"), "#e74c3c"),
+        ("Riemannian+LDA", summary.get("baselines", {}).get("riemannian"), "#e67e22"),
+        ("ViT-Only", summary.get("baselines", {}).get("vit_only"), "#f1c40f"),
         ("DualBranch\n(Attention)", summary.get("dual_branch", {}).get("attention"), "#2ecc71"),
-        ("DualBranch\n(Concat)",    summary.get("dual_branch", {}).get("concat"),    "#3498db"),
-        ("DualBranch\n(Gated)",     summary.get("dual_branch", {}).get("gated"),     "#9b59b6"),
+        ("DualBranch\n(Gated)", summary.get("dual_branch", {}).get("gated"), "#9b59b6"),
     ]
 
     names, accs, stds, colors = [], [], [], []
@@ -364,15 +406,24 @@ def plot_baseline_comparison(summary: dict, output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(max(8, len(names) * 1.2), 5))
     x = np.arange(len(names))
     bars = ax.bar(
-        x, accs, yerr=stds, capsize=6,
-        color=colors, alpha=0.85, edgecolor="black", linewidth=0.8,
+        x,
+        accs,
+        yerr=stds,
+        capsize=6,
+        color=colors,
+        alpha=0.85,
+        edgecolor="black",
+        linewidth=0.8,
     )
     for bar, acc in zip(bars, accs):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.8,
             f"{acc:.1f}%",
-            ha="center", va="bottom", fontsize=9, fontweight="bold",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
         )
     ax.axhline(50, color="gray", linestyle="--", linewidth=1, alpha=0.7, label="Chance")
     ax.set_xticks(x)
@@ -390,6 +441,7 @@ def plot_baseline_comparison(summary: dict, output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 4: Generate thesis figures")

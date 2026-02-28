@@ -29,17 +29,16 @@ def parse_args() -> argparse.Namespace:
         description="Stage 2: Baseline A – CSP + LDA.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--run-dir",  required=True, help="Run directory (results saved here)")
+    p.add_argument("--run-dir", required=True, help="Run directory (results saved here)")
     p.add_argument("--data-dir", default="~/mne_data", help="MNE data directory")
-    p.add_argument("--n-folds",  type=int, default=5)
-    p.add_argument("--seed",     type=int, default=42)
+    p.add_argument("--n-folds", type=int, default=5)
+    p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
 
 def setup_logging(run_dir: Path) -> logging.Logger:
     fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
-    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
-                        stream=sys.stdout)
+    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
     for lib in ("mne", "pyriemann", "timm", "matplotlib", "moabb"):
         logging.getLogger(lib).setLevel(logging.ERROR)
     log = logging.getLogger("stage_02")
@@ -58,7 +57,7 @@ def load_bci_iv2a(data_dir: str, log) -> dict[int, tuple[np.ndarray, np.ndarray]
     mne.set_log_level("ERROR")
     log.info("Loading BCI IV-2a (sfreq=128 Hz)...")
     dataset = BNCI2014_001()
-    paradigm = LeftRightImagery(fmin=4.0, fmax=40.0, resample=128.0)
+    paradigm = LeftRightImagery(fmin=8.0, fmax=32.0, resample=128.0)
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for sid in dataset.subject_list:
         try:
@@ -101,7 +100,7 @@ def main() -> None:
         csp = CSPFeatureExtractor(n_components=6, reg="ledoit_wolf")
         lda = LinearDiscriminantAnalysis()
         feats_train = csp.fit_transform(X_train, y_train)
-        feats_test  = csp.transform(X_test)
+        feats_test = csp.transform(X_test)
         lda.fit(feats_train, y_train)
         return lda.predict(feats_test), lda.predict_proba(feats_test)
 
@@ -110,34 +109,45 @@ def main() -> None:
     log.info("Within-subject %d-fold CV...", args.n_folds)
     t0 = time.time()
     within = within_subject_cv_all(
-        subject_data, predict_fn, model_name=MODEL_NAME,
-        n_folds=args.n_folds, seed=args.seed,
+        subject_data,
+        predict_fn,
+        model_name=MODEL_NAME,
+        n_folds=args.n_folds,
+        seed=args.seed,
     )
-    log.info("Within-subject done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, within.mean_accuracy, within.std_accuracy)
+    log.info(
+        "Within-subject done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        within.mean_accuracy,
+        within.std_accuracy,
+    )
 
     log.info("LOSO CV...")
     t0 = time.time()
     loso = loso_cv(subject_data, predict_fn, model_name=MODEL_NAME)
-    log.info("LOSO done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, loso.mean_accuracy, loso.std_accuracy)
+    log.info(
+        "LOSO done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        loso.mean_accuracy,
+        loso.std_accuracy,
+    )
 
     results = {
         "model": MODEL_NAME,
         "within_subject": {
             "mean_accuracy": within.mean_accuracy,
-            "std_accuracy":  within.std_accuracy,
-            "mean_kappa":    within.mean_kappa,
-            "mean_f1":       within.mean_f1,
-            "n_folds":       len(within.folds),
+            "std_accuracy": within.std_accuracy,
+            "mean_kappa": within.mean_kappa,
+            "mean_f1": within.mean_f1,
+            "n_folds": len(within.folds),
         },
         "loso": {
             "mean_accuracy": loso.mean_accuracy,
-            "std_accuracy":  loso.std_accuracy,
-            "mean_kappa":    loso.mean_kappa,
-            "mean_f1":       loso.mean_f1,
-            "n_folds":       len(loso.folds),
-            "per_subject":   loso.per_subject_accuracy,
+            "std_accuracy": loso.std_accuracy,
+            "mean_kappa": loso.mean_kappa,
+            "mean_f1": loso.mean_f1,
+            "n_folds": len(loso.folds),
+            "per_subject": loso.per_subject_accuracy,
         },
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)

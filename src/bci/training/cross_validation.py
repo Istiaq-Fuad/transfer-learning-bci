@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FoldResult:
     """Results from a single fold."""
+
     fold: int
     subject: int | None
     accuracy: float
@@ -38,6 +40,7 @@ class FoldResult:
 @dataclass
 class CVResult:
     """Aggregated cross-validation results."""
+
     strategy: str
     model_name: str
     folds: list[FoldResult]
@@ -62,6 +65,7 @@ class CVResult:
     def per_subject_accuracy(self) -> dict[int, float]:
         """Average accuracy grouped by subject (for LOSO)."""
         from collections import defaultdict
+
         acc_by_subject: dict[int, list[float]] = defaultdict(list)
         for fold in self.folds:
             if fold.subject is not None:
@@ -104,6 +108,7 @@ def _compute_fold_metrics(
     n_test: int,
 ) -> FoldResult:
     from bci.training.evaluation import compute_metrics
+
     m = compute_metrics(y_true, y_pred, y_prob)
     return FoldResult(
         fold=fold,
@@ -163,11 +168,20 @@ def within_subject_cv(
         folds.append(fold)
         logger.info(
             "  [S%02d fold %d/%d] acc=%.2f%% kappa=%.3f",
-            subject_id, fold_idx + 1, n_folds, fold.accuracy, fold.kappa,
+            subject_id,
+            fold_idx + 1,
+            n_folds,
+            fold.accuracy,
+            fold.kappa,
         )
 
     result = CVResult(strategy="within_subject", model_name=model_name, folds=folds)
-    logger.info("  Subject %02d mean: %.2f%% ± %.2f%%", subject_id, result.mean_accuracy, result.std_accuracy)
+    logger.info(
+        "  Subject %02d mean: %.2f%% ± %.2f%%",
+        subject_id,
+        result.mean_accuracy,
+        result.std_accuracy,
+    )
     return result
 
 
@@ -230,7 +244,11 @@ def loso_cv(
 
         logger.info(
             "LOSO fold %d/%d: test=S%02d, train=%d trials, test=%d trials",
-            fold_idx + 1, len(subjects), test_subj, len(y_train), len(y_test),
+            fold_idx + 1,
+            len(subjects),
+            test_subj,
+            len(y_train),
+            len(y_test),
         )
 
         y_pred, y_prob = predict_fn(X_train, y_train, X_test)
@@ -247,7 +265,9 @@ def loso_cv(
         folds.append(fold)
         logger.info(
             "  -> S%02d: acc=%.2f%% kappa=%.3f",
-            test_subj, fold.accuracy, fold.kappa,
+            test_subj,
+            fold.accuracy,
+            fold.kappa,
         )
 
     return CVResult(strategy="loso", model_name=model_name, folds=folds)
@@ -285,15 +305,21 @@ def make_synthetic_subject_data(
 
         for cls in range(2):
             X_cls = rng.standard_normal((n_per_class, n_channels, n_times)).astype(np.float32)
-            # Add a class-discriminative signal on channels 3 (C3) and 4 (C4)
-            # Class 0 (left): higher power on C4 (right hemisphere)
-            # Class 1 (right): higher power on C3 (left hemisphere)
+            # Add a class-discriminative signal on C3 (index 7) and C4 (index 11)
+            # in the standard 22-channel BCI IV-2a layout:
+            #   index 7  = C3 (left hemisphere)
+            #   index 11 = C4 (right hemisphere)
+            # Class 0 (left hand): higher power on C4 (right hemisphere, index 11)
+            # Class 1 (right hand): higher power on C3 (left hemisphere, index 7)
+            # For datasets with fewer channels, fall back to indices 0/1.
+            c3_idx = 7 if n_channels > 11 else min(0, n_channels - 1)
+            c4_idx = 11 if n_channels > 11 else min(1, n_channels - 1)
             t = np.linspace(0, 4, n_times)
             signal = np.sin(2 * np.pi * 10 * t) * 2.0  # 10 Hz mu rhythm
             if cls == 0:
-                X_cls[:, 3, :] += signal
+                X_cls[:, c4_idx, :] += signal
             else:
-                X_cls[:, 4, :] += signal
+                X_cls[:, c3_idx, :] += signal
 
             X_list.append(X_cls)
             y_list.append(np.full(n_per_class, cls, dtype=np.int64))

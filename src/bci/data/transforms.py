@@ -6,9 +6,23 @@ Continuous Wavelet Transform (CWT) with Morlet wavelet.
 These images serve as input to the Vision Transformer branch.
 
 Supported channel composition modes:
-    - "rgb_c3_cz_c4": Map C3→Red, Cz→Green, C4→Blue (3-channel image)
-    - "mosaic": Tile spectrograms from multiple channels into a grid
-    - "single": Generate one spectrogram per channel (grayscale)
+    - "rgb_c3_cz_c4":  Map C3→Red, Cz→Green, C4→Blue (3-channel image, legacy)
+    - "mosaic":        Tile spectrograms from multiple channels into a grid
+    - "single":        Generate one spectrogram per channel (grayscale)
+    - "multichannel":  Produce one image channel per selected channel (N-channel)
+
+Normalisation modes (SpectrogramConfig.normalize_mode):
+    - "per_channel":   Normalise each channel spectrogram independently to [0,1]
+    - "joint":         Normalise across all selected channels jointly, preserving
+                       cross-channel power ratios (laterality of motor cortex)
+
+ImageNet normalisation (SpectrogramConfig.apply_imagenet_norm):
+    After scaling to [0,1], subtract ImageNet mean and divide by std so that
+    the pretrained ViT receives inputs in the expected distribution.
+    ImageNet stats: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    For N-channel (N≠3) inputs, the first three channels use RGB stats and
+    remaining channels use the green-channel stats (0.456 / 0.224) as a
+    reasonable default.
 """
 
 from __future__ import annotations
@@ -23,6 +37,44 @@ from PIL import Image
 from bci.utils.config import SpectrogramConfig
 
 logger = logging.getLogger(__name__)
+
+# ImageNet normalisation constants (RGB order)
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+def normalize_imagenet(
+    images: np.ndarray,
+) -> np.ndarray:
+    """Apply ImageNet mean/std normalisation to a batch of float32 images.
+
+    Assumes images are already in [0, 1] range.
+
+    Args:
+        images: Float32 array of shape (n_trials, C, H, W) already in [0,1].
+
+    Returns:
+        Normalised float32 array of the same shape.
+    """
+    n_channels = images.shape[1]
+
+    # Build per-channel mean/std arrays, extending beyond 3 channels if needed
+    mean = np.empty(n_channels, dtype=np.float32)
+    std = np.empty(n_channels, dtype=np.float32)
+    for c in range(n_channels):
+        if c < 3:
+            mean[c] = _IMAGENET_MEAN[c]
+            std[c] = _IMAGENET_STD[c]
+        else:
+            # Use green-channel stats for extra channels
+            mean[c] = _IMAGENET_MEAN[1]
+            std[c] = _IMAGENET_STD[1]
+
+    # Broadcast: (C,) -> (1, C, 1, 1)
+    mean = mean[None, :, None, None]
+    std = std[None, :, None, None]
+
+    return (images - mean) / std
 
 
 class CWTSpectrogramTransform:
@@ -74,12 +126,17 @@ class CWTSpectrogramTransform:
 
         logger.info(
             "CWT scales: %d scales for %.1f-%.1f Hz (sfreq=%.1f Hz)",
-            len(scales), cfg.freq_min, cfg.freq_max, sfreq,
+            len(scales),
+            cfg.freq_min,
+            cfg.freq_max,
+            sfreq,
         )
         return scales
 
     def cwt_single_channel(
-        self, signal: np.ndarray, sfreq: float,
+        self,
+        signal: np.ndarray,
+        sfreq: float,
     ) -> np.ndarray:
         """Compute CWT spectrogram for a single channel.
 
@@ -106,22 +163,47 @@ class CWTSpectrogramTransform:
         return spectrogram
 
     def _normalize_spectrogram(self, spec: np.ndarray) -> np.ndarray:
-        """Normalize spectrogram to [0, 255] uint8 range.
+        """Normalize a single spectrogram to [0, 255] uint8 range.
+
+        Used internally when per-channel normalisation is appropriate
+        (e.g. individual RGB channels in legacy "rgb_c3_cz_c4" mode).
 
         Args:
-            spec: 2D spectrogram array.
+            spec: 2D spectrogram array (n_freqs, n_times).
 
         Returns:
             Normalized uint8 array.
         """
-        # Min-max normalization
         spec_min = spec.min()
         spec_max = spec.max()
         if spec_max - spec_min < 1e-10:
             return np.zeros_like(spec, dtype=np.uint8)
-
         normalized = (spec - spec_min) / (spec_max - spec_min)
         return (normalized * 255).astype(np.uint8)
+
+    def _normalize_joint(self, specs: list[np.ndarray]) -> list[np.ndarray]:
+        """Normalize multiple spectrograms jointly to [0, 255] uint8.
+
+        All spectrograms share a single min/max computed across all of them,
+        preserving relative power ratios between channels (e.g. C3 vs C4
+        laterality for motor imagery).
+
+        Args:
+            specs: List of 2D float arrays (n_freqs, n_times).
+
+        Returns:
+            List of uint8 arrays, same order and shapes.
+        """
+        all_vals = np.concatenate([s.ravel() for s in specs])
+        g_min = all_vals.min()
+        g_max = all_vals.max()
+        if g_max - g_min < 1e-10:
+            return [np.zeros_like(s, dtype=np.uint8) for s in specs]
+        result = []
+        for s in specs:
+            normalized = (s - g_min) / (g_max - g_min)
+            result.append((normalized * 255).astype(np.uint8))
+        return result
 
     def _resize_image(self, img_array: np.ndarray) -> np.ndarray:
         """Resize a spectrogram image to the target size.
@@ -146,6 +228,8 @@ class CWTSpectrogramTransform:
         """Transform a single trial into an RGB spectrogram image.
 
         Maps C3 -> Red, Cz -> Green, C4 -> Blue.
+        Normalisation (per-channel or joint) is determined by
+        ``config.normalize_mode``.
 
         Args:
             trial: 2D array of shape (n_channels, n_times).
@@ -158,19 +242,98 @@ class CWTSpectrogramTransform:
         rgb_channels = ["C3", "Cz", "C4"]
         rgb_image = np.zeros((*self.config.image_size, 3), dtype=np.uint8)
 
-        for i, ch_name in enumerate(rgb_channels):
+        # Compute raw float spectrograms for all 3 channels first
+        raw_specs: list[np.ndarray | None] = []
+        for ch_name in rgb_channels:
             if ch_name in channel_names:
                 ch_idx = channel_names.index(ch_name)
-                spec = self.cwt_single_channel(trial[ch_idx], sfreq)
-                spec_norm = self._normalize_spectrogram(spec)
-                rgb_image[:, :, i] = self._resize_image(spec_norm)
+                raw_specs.append(self.cwt_single_channel(trial[ch_idx], sfreq))
             else:
                 logger.warning(
                     "Channel %s not found, using zeros for %s channel",
-                    ch_name, ["Red", "Green", "Blue"][i],
+                    ch_name,
+                    ["Red", "Green", "Blue"][rgb_channels.index(ch_name)],
                 )
+                raw_specs.append(None)
+
+        # Normalise
+        if self.config.normalize_mode == "joint":
+            valid = [s for s in raw_specs if s is not None]
+            if valid:
+                normed = self._normalize_joint(valid)
+                norm_iter = iter(normed)
+                norm_specs = [next(norm_iter) if s is not None else None for s in raw_specs]
+            else:
+                norm_specs = raw_specs
+        else:  # per_channel
+            norm_specs = [
+                self._normalize_spectrogram(s) if s is not None else None for s in raw_specs
+            ]
+
+        for i, ns in enumerate(norm_specs):
+            if ns is not None:
+                rgb_image[:, :, i] = self._resize_image(ns)
 
         return rgb_image
+
+    def transform_trial_multichannel(
+        self,
+        trial: np.ndarray,
+        channel_names: list[str],
+        sfreq: float,
+    ) -> np.ndarray:
+        """Transform a single trial into an N-channel spectrogram image.
+
+        Each selected channel produces one image channel (grayscale plane).
+        Channels are selected via ``config.spectrogram_channels``.
+        Normalisation mode follows ``config.normalize_mode``.
+
+        Args:
+            trial: 2D array of shape (n_channels, n_times).
+            channel_names: List of channel names corresponding to trial rows.
+            sfreq: Sampling frequency.
+
+        Returns:
+            Float32 image array of shape (n_selected, H, W) in [0, 1].
+        """
+        selected = self.config.spectrogram_channels
+        n_selected = len(selected)
+        H, W = self.config.image_size
+        result = np.zeros((n_selected, H, W), dtype=np.float32)
+
+        raw_specs: list[np.ndarray | None] = []
+        for ch_name in selected:
+            if ch_name in channel_names:
+                ch_idx = channel_names.index(ch_name)
+                raw_specs.append(self.cwt_single_channel(trial[ch_idx], sfreq))
+            else:
+                logger.warning(
+                    "Multichannel: channel %s not found in %s; using zeros",
+                    ch_name,
+                    channel_names,
+                )
+                raw_specs.append(None)
+
+        # Normalise
+        if self.config.normalize_mode == "joint":
+            valid = [s for s in raw_specs if s is not None]
+            if valid:
+                normed = self._normalize_joint(valid)
+                norm_iter = iter(normed)
+                norm_specs = [next(norm_iter) if s is not None else None for s in raw_specs]
+            else:
+                norm_specs = raw_specs
+        else:
+            norm_specs = [
+                self._normalize_spectrogram(s) if s is not None else None for s in raw_specs
+            ]
+
+        for i, ns in enumerate(norm_specs):
+            if ns is not None:
+                resized = self._resize_image(ns)  # H×W uint8
+                result[i] = resized.astype(np.float32) / 255.0
+
+        return result  # (n_selected, H, W) in [0,1]
 
     def transform_trial_mosaic(
         self,
@@ -214,7 +377,7 @@ class CWTSpectrogramTransform:
 
             y_start = row * cell_h
             x_start = col * cell_w
-            mosaic[y_start:y_start + cell_h, x_start:x_start + cell_w] = np.array(cell_img)
+            mosaic[y_start : y_start + cell_h, x_start : x_start + cell_w] = np.array(cell_img)
 
         return mosaic
 
@@ -233,39 +396,53 @@ class CWTSpectrogramTransform:
 
         Returns:
             Image array:
-                - "rgb_c3_cz_c4": shape (n_trials, H, W, 3)
-                - "mosaic": shape (n_trials, H, W)
-                - "single": shape (n_trials * n_channels, H, W)
+                - "rgb_c3_cz_c4":  shape (n_trials, H, W, 3)  uint8
+                - "mosaic":        shape (n_trials, H, W)      uint8
+                - "single":        shape (n_trials * n_channels, H, W) uint8
+                - "multichannel":  shape (n_trials, n_selected, H, W)  float32
         """
         cfg = self.config
         n_trials = X.shape[0]
 
         logger.info(
             "Generating %s spectrograms for %d trials...",
-            cfg.channel_mode, n_trials,
+            cfg.channel_mode,
+            n_trials,
         )
 
         if cfg.channel_mode == "rgb_c3_cz_c4":
             images = np.zeros(
-                (n_trials, *cfg.image_size, 3), dtype=np.uint8,
+                (n_trials, *cfg.image_size, 3),
+                dtype=np.uint8,
             )
             for i in range(n_trials):
                 images[i] = self.transform_trial_rgb(X[i], channel_names, sfreq)
 
+        elif cfg.channel_mode == "multichannel":
+            n_selected = len(cfg.spectrogram_channels)
+            H, W = cfg.image_size
+            images = np.zeros((n_trials, n_selected, H, W), dtype=np.float32)
+            for i in range(n_trials):
+                images[i] = self.transform_trial_multichannel(X[i], channel_names, sfreq)
+
         elif cfg.channel_mode == "mosaic":
             images = np.zeros(
-                (n_trials, *cfg.image_size), dtype=np.uint8,
+                (n_trials, *cfg.image_size),
+                dtype=np.uint8,
             )
             for i in range(n_trials):
                 images[i] = self.transform_trial_mosaic(
-                    X[i], channel_names, sfreq,
+                    X[i],
+                    channel_names,
+                    sfreq,
                 )
 
         elif cfg.channel_mode == "single":
             # One spectrogram per channel per trial
             n_channels = X.shape[1]
             images = np.zeros(
-                (n_trials * n_channels, *cfg.image_size), dtype=np.uint8,
+                (n_trials * n_channels, *cfg.image_size),
+                dtype=np.uint8,
             )
             for i in range(n_trials):
                 for j in range(n_channels):

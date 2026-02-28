@@ -12,7 +12,6 @@ Evaluation strategies:
 
 Fusion ablation:
     --fusion attention   (default, thesis target)
-    --fusion concat
     --fusion gated
 
 Usage:
@@ -26,8 +25,8 @@ Usage:
     # Real BCI IV-2a (once downloaded)
     uv run python scripts/train_dual_branch.py --data real --data-dir ~/mne_data
 
-    # Fusion ablation (run all three)
-    for fusion in attention concat gated; do
+    # Fusion ablation (attention vs gated)
+    for fusion in attention gated; do
         uv run python scripts/train_dual_branch.py --fusion $fusion \\
             --output results/dual_branch_${fusion}.json
     done
@@ -70,6 +69,7 @@ MODEL_NAME = "DualBranch-ViT+CSP+Riemann"
 # Per-fold training helper
 # ---------------------------------------------------------------------------
 
+
 def _train_and_eval_fold(
     fold_idx: int,
     subject_id: int | None,
@@ -94,9 +94,7 @@ def _train_and_eval_fold(
     set_seed(seed + fold_idx)  # slight variation per fold for stochasticity
 
     # --- Build fold datasets (fits CSP+Riemannian on train only) ---
-    train_ds, test_ds, math_input_dim = builder.build_fold(
-        X_train, y_train, X_test, y_test
-    )
+    train_ds, test_ds, math_input_dim = builder.build_fold(X_train, y_train, X_test, y_test)
 
     # --- Instantiate fresh model ---
     model_config = ModelConfig(
@@ -121,10 +119,10 @@ def _train_and_eval_fold(
 
     def dual_forward_fn(batch):
         images, features, labels = batch
-        images   = images.to(_device)
+        images = images.to(_device)
         features = features.to(_device)
-        labels   = labels.to(_device)
-        logits   = model(images, features)
+        labels = labels.to(_device)
+        logits = model(images, features)
         return logits, labels
 
     # --- Train ---
@@ -146,9 +144,7 @@ def _train_and_eval_fold(
     trainer.fit(train_ds, forward_fn=dual_forward_fn, model_tag=f"dual_fold{fold_idx}")
 
     # --- Predict on test set ---
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0
-    )
+    test_loader = DataLoader(test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
     y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_forward_fn)
 
     # --- Compute metrics ---
@@ -167,8 +163,10 @@ def _train_and_eval_fold(
     )
     logger.info(
         "  Fold %d [S%s]: acc=%.2f%%  kappa=%.3f",
-        fold_idx, f"{subject_id:02d}" if subject_id is not None else "??",
-        result.accuracy, result.kappa,
+        fold_idx,
+        f"{subject_id:02d}" if subject_id is not None else "??",
+        result.accuracy,
+        result.kappa,
     )
     return result
 
@@ -176,6 +174,7 @@ def _train_and_eval_fold(
 # ---------------------------------------------------------------------------
 # Within-subject CV
 # ---------------------------------------------------------------------------
+
 
 def run_within_subject_cv(
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]],
@@ -198,8 +197,10 @@ def run_within_subject_cv(
             fold_result = _train_and_eval_fold(
                 fold_idx=fold_counter,
                 subject_id=subj_id,
-                X_train=X_train, y_train=y_train,
-                X_test=X_test,   y_test=y_test,
+                X_train=X_train,
+                y_train=y_train,
+                X_test=X_test,
+                y_test=y_test,
                 builder=builder,
                 **kwargs,
             )
@@ -209,7 +210,9 @@ def run_within_subject_cv(
         subj_accs = [f.accuracy for f in all_folds if f.subject == subj_id]
         logger.info(
             "  Subject %02d: mean=%.2f%% ± %.2f%%",
-            subj_id, float(np.mean(subj_accs)), float(np.std(subj_accs)),
+            subj_id,
+            float(np.mean(subj_accs)),
+            float(np.std(subj_accs)),
         )
 
     return CVResult(
@@ -222,6 +225,7 @@ def run_within_subject_cv(
 # ---------------------------------------------------------------------------
 # LOSO CV
 # ---------------------------------------------------------------------------
+
 
 def run_loso_cv(
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]],
@@ -241,13 +245,19 @@ def run_loso_cv(
 
         logger.info(
             "LOSO fold %d/%d: test=S%02d, train=%d, test=%d",
-            fold_idx + 1, len(subjects), test_subj, len(y_train), len(y_test),
+            fold_idx + 1,
+            len(subjects),
+            test_subj,
+            len(y_train),
+            len(y_test),
         )
         fold_result = _train_and_eval_fold(
             fold_idx=fold_idx,
             subject_id=test_subj,
-            X_train=X_train, y_train=y_train,
-            X_test=X_test,   y_test=y_test,
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            y_test=y_test,
             builder=builder,
             **kwargs,
         )
@@ -259,6 +269,7 @@ def run_loso_cv(
 # ---------------------------------------------------------------------------
 # Printing + saving results
 # ---------------------------------------------------------------------------
+
 
 def print_results_table(result: CVResult, fusion: str) -> None:
     print("\n" + "=" * 65)
@@ -307,6 +318,7 @@ def save_results(result: CVResult, fusion: str, output_path: Path) -> None:
 # Real data loader
 # ---------------------------------------------------------------------------
 
+
 def load_real_data(data_dir: str) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     import mne
     from moabb.datasets import BNCI2014_001
@@ -335,6 +347,7 @@ def load_real_data(data_dir: str) -> dict[int, tuple[np.ndarray, np.ndarray]]:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 2: Dual-Branch Model Training")
     parser.add_argument("--data", choices=["synthetic", "real"], default="synthetic")
@@ -346,7 +359,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--fusion",
-        choices=["attention", "concat", "gated"],
+        choices=["attention", "gated"],
         default="attention",
         help="Fusion method (default: attention)",
     )
@@ -431,9 +444,7 @@ def main() -> None:
     t0 = time.time()
     if args.strategy == "within_subject":
         logger.info("\nRunning within-subject %d-fold CV...", args.n_folds)
-        result = run_within_subject_cv(
-            subject_data, builder, n_folds=args.n_folds, **fold_kwargs
-        )
+        result = run_within_subject_cv(subject_data, builder, n_folds=args.n_folds, **fold_kwargs)
     else:
         logger.info("\nRunning LOSO CV...")
         result = run_loso_cv(subject_data, builder, **fold_kwargs)

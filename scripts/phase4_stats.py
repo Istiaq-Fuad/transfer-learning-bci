@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Statistical helpers
 # ---------------------------------------------------------------------------
 
+
 def cohens_d(a: list[float], b: list[float]) -> float:
     """Compute Cohen's d effect size between two groups."""
     a, b = np.array(a), np.array(b)
@@ -41,8 +42,7 @@ def cohens_d(a: list[float], b: list[float]) -> float:
     if n_a < 2 or n_b < 2:
         return float("nan")
     pooled_std = math.sqrt(
-        ((n_a - 1) * np.var(a, ddof=1) + (n_b - 1) * np.var(b, ddof=1))
-        / (n_a + n_b - 2)
+        ((n_a - 1) * np.var(a, ddof=1) + (n_b - 1) * np.var(b, ddof=1)) / (n_a + n_b - 2)
     )
     if pooled_std < 1e-10:
         return float("nan")
@@ -66,6 +66,7 @@ def wilcoxon_test(a: list[float], b: list[float]) -> tuple[float, float]:
     """Wilcoxon signed-rank test. Returns (statistic, p_value)."""
     try:
         from scipy.stats import wilcoxon  # type: ignore
+
         diffs = np.array(a) - np.array(b)
         if np.all(diffs == 0):
             return float("nan"), 1.0
@@ -83,6 +84,7 @@ def t_test_paired(a: list[float], b: list[float]) -> tuple[float, float]:
     """Paired t-test. Returns (statistic, p_value)."""
     try:
         from scipy.stats import ttest_rel  # type: ignore
+
         stat, p = ttest_rel(a, b)
         return float(stat), float(p)
     except ImportError:
@@ -107,6 +109,7 @@ def friedman_test(*groups: list[float]) -> tuple[float, float]:
     """Friedman test for k related samples. Returns (statistic, p_value)."""
     try:
         from scipy.stats import friedmanchisquare  # type: ignore
+
         stat, p = friedmanchisquare(*groups)
         return float(stat), float(p)
     except ImportError:
@@ -120,6 +123,7 @@ def friedman_test(*groups: list[float]) -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 # Extract per-subject accuracy arrays from summary
 # ---------------------------------------------------------------------------
+
 
 def _get_per_subject_accs(result: dict | None) -> dict[int, float]:
     """Return {subject_id: accuracy} from a result dict."""
@@ -139,6 +143,7 @@ def _aligned_arrays(ps_a: dict, ps_b: dict) -> tuple[list[float], list[float]]:
 # Analysis functions
 # ---------------------------------------------------------------------------
 
+
 def analyze_baseline_vs_dual(summary: dict) -> list[dict]:
     """Compare dual-branch (attention) against each baseline."""
     results = []
@@ -154,9 +159,9 @@ def analyze_baseline_vs_dual(summary: dict) -> list[dict]:
         return results
 
     baselines = [
-        ("CSP+LDA",        summary.get("baselines", {}).get("csp_lda")),
+        ("CSP+LDA", summary.get("baselines", {}).get("csp_lda")),
         ("Riemannian+LDA", summary.get("baselines", {}).get("riemannian")),
-        ("ViT-Only",       summary.get("baselines", {}).get("vit_only")),
+        ("ViT-Only", summary.get("baselines", {}).get("vit_only")),
     ]
 
     for name, bsl in baselines:
@@ -174,19 +179,21 @@ def analyze_baseline_vs_dual(summary: dict) -> list[dict]:
         t_stat, t_p = t_test_paired(dual_vals, bsl_vals)
         d = cohens_d(dual_vals, bsl_vals)
 
-        results.append({
-            "comparison": f"DualBranch(Attn) vs {name}",
-            "n_subjects": len(dual_vals),
-            "dual_mean": float(np.mean(dual_vals)),
-            "baseline_mean": float(np.mean(bsl_vals)),
-            "mean_diff": float(np.mean(dual_vals)) - float(np.mean(bsl_vals)),
-            "wilcoxon_stat": w_stat,
-            "wilcoxon_p": w_p,
-            "t_stat": t_stat,
-            "t_p": t_p,
-            "cohens_d": d,
-            "effect_size": interpret_d(d),
-        })
+        results.append(
+            {
+                "comparison": f"DualBranch(Attn) vs {name}",
+                "n_subjects": len(dual_vals),
+                "dual_mean": float(np.mean(dual_vals)),
+                "baseline_mean": float(np.mean(bsl_vals)),
+                "mean_diff": float(np.mean(dual_vals)) - float(np.mean(bsl_vals)),
+                "wilcoxon_stat": w_stat,
+                "wilcoxon_p": w_p,
+                "t_stat": t_stat,
+                "t_p": t_p,
+                "cohens_d": d,
+                "effect_size": interpret_d(d),
+            }
+        )
 
     return results
 
@@ -197,15 +204,15 @@ def analyze_transfer_conditions(summary: dict) -> list[dict]:
     tl = summary.get("transfer_learning", {})
 
     conditions = {
-        "scratch":  tl.get("scratch"),
+        "scratch": tl.get("scratch"),
         "imagenet": tl.get("imagenet"),
         "transfer": tl.get("transfer"),
     }
 
     pairs = [
-        ("transfer", "scratch",  "EEG-Pretrained vs Scratch"),
+        ("transfer", "scratch", "EEG-Pretrained vs Scratch"),
         ("transfer", "imagenet", "EEG-Pretrained vs ImageNet"),
-        ("imagenet", "scratch",  "ImageNet vs Scratch"),
+        ("imagenet", "scratch", "ImageNet vs Scratch"),
     ]
 
     for cond_a, cond_b, label in pairs:
@@ -223,14 +230,16 @@ def analyze_transfer_conditions(summary: dict) -> list[dict]:
         # If per_subject is empty but we have mean_accuracy
         if not vals_a and ra.get("within_acc") is not None:
             logger.info("  %s: no per-subject data; using mean only", label)
-            results.append({
-                "comparison": label,
-                "n_subjects": 0,
-                f"{cond_a}_mean": ra.get("within_acc"),
-                f"{cond_b}_mean": rb.get("within_acc"),
-                "mean_diff": (ra.get("within_acc", 0) - rb.get("within_acc", 0)),
-                "note": "Insufficient per-subject data for significance test",
-            })
+            results.append(
+                {
+                    "comparison": label,
+                    "n_subjects": 0,
+                    f"{cond_a}_mean": ra.get("within_acc"),
+                    f"{cond_b}_mean": rb.get("within_acc"),
+                    "mean_diff": (ra.get("within_acc", 0) - rb.get("within_acc", 0)),
+                    "note": "Insufficient per-subject data for significance test",
+                }
+            )
             continue
 
         if len(vals_a) < 2:
@@ -240,19 +249,21 @@ def analyze_transfer_conditions(summary: dict) -> list[dict]:
         t_stat, t_p = t_test_paired(vals_a, vals_b)
         d = cohens_d(vals_a, vals_b)
 
-        results.append({
-            "comparison": label,
-            "n_subjects": len(vals_a),
-            f"{cond_a}_mean": float(np.mean(vals_a)),
-            f"{cond_b}_mean": float(np.mean(vals_b)),
-            "mean_diff": float(np.mean(vals_a)) - float(np.mean(vals_b)),
-            "wilcoxon_stat": w_stat,
-            "wilcoxon_p": w_p,
-            "t_stat": t_stat,
-            "t_p": t_p,
-            "cohens_d": d,
-            "effect_size": interpret_d(d),
-        })
+        results.append(
+            {
+                "comparison": label,
+                "n_subjects": len(vals_a),
+                f"{cond_a}_mean": float(np.mean(vals_a)),
+                f"{cond_b}_mean": float(np.mean(vals_b)),
+                "mean_diff": float(np.mean(vals_a)) - float(np.mean(vals_b)),
+                "wilcoxon_stat": w_stat,
+                "wilcoxon_p": w_p,
+                "t_stat": t_stat,
+                "t_p": t_p,
+                "cohens_d": d,
+                "effect_size": interpret_d(d),
+            }
+        )
 
     return results
 
@@ -260,7 +271,7 @@ def analyze_transfer_conditions(summary: dict) -> list[dict]:
 def analyze_fusion_methods(summary: dict) -> dict:
     """Friedman test across fusion methods."""
     dual = summary.get("dual_branch", {})
-    methods = ["attention", "concat", "gated"]
+    methods = ["attention", "gated"]
 
     accs_by_method = {}
     for m in methods:
@@ -330,6 +341,7 @@ def analyze_per_subject_variance(summary: dict) -> dict:
 # Print helpers
 # ---------------------------------------------------------------------------
 
+
 def _pval_stars(p: float) -> str:
     if np.isnan(p):
         return "N/A"
@@ -350,37 +362,35 @@ def print_stats_table(baseline_results: list, transfer_results: list) -> None:
 
     if baseline_results:
         print("\n--- Dual-Branch vs Baselines (Wilcoxon Signed-Rank, per-subject) ---")
-        print(f"{'Comparison':<40} {'N':>3} {'Diff':>7} {'W-stat':>8} {'p':>8} {'Sig':>5} {'d':>6} {'Effect':>10}")
+        print(
+            f"{'Comparison':<40} {'N':>3} {'Diff':>7} {'W-stat':>8} {'p':>8} {'Sig':>5} {'d':>6} {'Effect':>10}"
+        )
         print("-" * W)
         for r in baseline_results:
-            n   = r.get("n_subjects", 0)
+            n = r.get("n_subjects", 0)
             diff = r.get("mean_diff", float("nan"))
-            w   = r.get("wilcoxon_stat", float("nan"))
-            p   = r.get("wilcoxon_p",   float("nan"))
-            d   = r.get("cohens_d",     float("nan"))
+            w = r.get("wilcoxon_stat", float("nan"))
+            p = r.get("wilcoxon_p", float("nan"))
+            d = r.get("cohens_d", float("nan"))
             eff = r.get("effect_size", "N/A")
             sig = _pval_stars(p)
             name = r["comparison"][:39]
             print(
-                f"{name:<40} {n:>3} "
-                f"{diff:>+6.2f}% "
-                f"{w:>8.2f} "
-                f"{p:>8.4f} "
-                f"{sig:>5} "
-                f"{d:>6.3f} "
-                f"{eff:>10}"
+                f"{name:<40} {n:>3} {diff:>+6.2f}% {w:>8.2f} {p:>8.4f} {sig:>5} {d:>6.3f} {eff:>10}"
             )
 
     if transfer_results:
         print("\n--- Transfer Learning Conditions (Paired t-test, per-subject) ---")
-        print(f"{'Comparison':<40} {'N':>3} {'Diff':>7} {'t-stat':>8} {'p':>8} {'Sig':>5} {'d':>6} {'Effect':>10}")
+        print(
+            f"{'Comparison':<40} {'N':>3} {'Diff':>7} {'t-stat':>8} {'p':>8} {'Sig':>5} {'d':>6} {'Effect':>10}"
+        )
         print("-" * W)
         for r in transfer_results:
-            n   = r.get("n_subjects", 0)
+            n = r.get("n_subjects", 0)
             diff = r.get("mean_diff", float("nan"))
-            t   = r.get("t_stat",   float("nan"))
-            p   = r.get("t_p",      float("nan"))
-            d   = r.get("cohens_d", float("nan"))
+            t = r.get("t_stat", float("nan"))
+            p = r.get("t_p", float("nan"))
+            d = r.get("cohens_d", float("nan"))
             eff = r.get("effect_size", "N/A")
             note = r.get("note", "")
             sig = _pval_stars(p) if not note else "–"
@@ -405,6 +415,7 @@ def print_stats_table(baseline_results: list, transfer_results: list) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 4: Statistical Analysis")
@@ -455,8 +466,10 @@ def main() -> None:
             print(f"  {m:<12}: {s['mean']:.2f}% ± {s['std']:.2f}% (n={s['n']})")
         if "p_value" in fusion_results:
             p = fusion_results["p_value"]
-            print(f"\n  Friedman test: chi2={fusion_results['statistic']:.3f}, "
-                  f"p={p:.4f} {_pval_stars(p)}")
+            print(
+                f"\n  Friedman test: chi2={fusion_results['statistic']:.3f}, "
+                f"p={p:.4f} {_pval_stars(p)}"
+            )
 
     # Save
     stats_output = {

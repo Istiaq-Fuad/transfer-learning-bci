@@ -64,9 +64,8 @@ logger = logging.getLogger(__name__)
 # Real BCI IV-2a loader (same as finetune script)
 # ---------------------------------------------------------------------------
 
-def load_bci_iv2a(
-    data_dir: str, sfreq: float = 128.0
-) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+
+def load_bci_iv2a(data_dir: str, sfreq: float = 128.0) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     import mne
     from moabb.datasets import BNCI2014_001
     from moabb.paradigms import LeftRightImagery
@@ -93,6 +92,7 @@ def load_bci_iv2a(
 # Build model for a condition
 # ---------------------------------------------------------------------------
 
+
 def _build_model(
     condition: str,
     math_input_dim: int,
@@ -116,13 +116,13 @@ def _build_model(
 
     if condition == "transfer":
         if checkpoint_path is None or not checkpoint_path.exists():
-            raise FileNotFoundError(
-                f"Transfer condition requires a checkpoint: {checkpoint_path}"
-            )
+            raise FileNotFoundError(f"Transfer condition requires a checkpoint: {checkpoint_path}")
+        # Load EEG-pretrained weights into ViT backbone.
+        # Checkpoint saved via model.backbone.state_dict() in pretrain_physionet.py,
+        # so keys match model.vit_branch.backbone directly.
+        # Filter out the classification head key.
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        backbone_state = {
-            k: v for k, v in ckpt.items() if not k.startswith("backbone.head")
-        }
+        backbone_state = {k: v for k, v in ckpt.items() if not k.startswith("head")}
         model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
         model.freeze_vit_backbone(unfreeze_last_n_blocks=unfreeze_last_n)
 
@@ -135,6 +135,7 @@ def _build_model(
 # ---------------------------------------------------------------------------
 # Single reduced-data trial
 # ---------------------------------------------------------------------------
+
 
 def _run_one_trial(
     condition: str,
@@ -160,9 +161,7 @@ def _run_one_trial(
     # Subsample training data
     if fraction < 1.0:
         n_keep = max(2, int(len(y_train_full) * fraction))
-        sss = StratifiedShuffleSplit(
-            n_splits=1, train_size=n_keep, random_state=seed
-        )
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=n_keep, random_state=seed)
         keep_idx, _ = next(sss.split(X_train_full, y_train_full))
         X_train = X_train_full[keep_idx]
         y_train = y_train_full[keep_idx]
@@ -171,9 +170,7 @@ def _run_one_trial(
         y_train = y_train_full
 
     # Build fold datasets
-    train_ds, test_ds, math_input_dim = builder.build_fold(
-        X_train, y_train, X_test, y_test
-    )
+    train_ds, test_ds, math_input_dim = builder.build_fold(X_train, y_train, X_test, y_test)
 
     # Build model
     model = _build_model(
@@ -205,9 +202,7 @@ def _run_one_trial(
     )
     trainer.fit(train_ds, forward_fn=dual_fwd, model_tag=f"{condition}_f{fraction:.0%}")
 
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0
-    )
+    test_loader = DataLoader(test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
     y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_fwd)
     m = compute_metrics(y_test, y_pred, y_prob)
     return m["accuracy"]
@@ -216,6 +211,7 @@ def _run_one_trial(
 # ---------------------------------------------------------------------------
 # Main experiment loop
 # ---------------------------------------------------------------------------
+
 
 def run_reduced_data_experiment(
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]],
@@ -281,15 +277,23 @@ def run_reduced_data_experiment(
                         except Exception as e:
                             logger.warning(
                                 "  Trial failed (S%d fold%d rep%d %s): %s",
-                                subj_id, fold_i, rep, condition, e,
+                                subj_id,
+                                fold_i,
+                                rep,
+                                condition,
+                                e,
                             )
                             acc = float("nan")
 
                         cond_accs[condition].append(acc)
                         logger.info(
                             "  %s | S%02d fold%d rep%d | frac=%.0f%% | acc=%.2f%%",
-                            condition.upper(), subj_id, fold_i, rep,
-                            fraction * 100, acc,
+                            condition.upper(),
+                            subj_id,
+                            fold_i,
+                            rep,
+                            fraction * 100,
+                            acc,
                         )
 
         # Store stats for this fraction
@@ -304,7 +308,8 @@ def run_reduced_data_experiment(
             }
             logger.info(
                 "  %s @ %.0f%%: %.2f%% ± %.2f%% (n=%d)",
-                condition.upper(), fraction * 100,
+                condition.upper(),
+                fraction * 100,
                 results[condition][frac_str]["mean"],
                 results[condition][frac_str]["std"],
                 len(accs),
@@ -316,6 +321,7 @@ def run_reduced_data_experiment(
 # ---------------------------------------------------------------------------
 # Print + save
 # ---------------------------------------------------------------------------
+
 
 def print_reduced_data_table(results: dict, fractions: list[float]) -> None:
     conditions = list(results.keys())
@@ -329,7 +335,7 @@ def print_reduced_data_table(results: dict, fractions: list[float]) -> None:
     print("-" * (12 + 22 * len(conditions)))
     for fraction in fractions:
         frac_str = f"{fraction:.2f}"
-        row = f"{fraction*100:>9.0f}%"
+        row = f"{fraction * 100:>9.0f}%"
         for c in conditions:
             d = results[c].get(frac_str, {})
             mean = d.get("mean", float("nan"))
@@ -362,6 +368,7 @@ def save_results(results: dict, fractions: list[float], output_path: Path) -> No
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Phase 3 Step 3: Reduced-Data Transfer Learning Experiment"
@@ -387,7 +394,9 @@ def main() -> None:
         help="Training-set fractions to evaluate",
     )
     parser.add_argument(
-        "--n-repeats", type=int, default=3,
+        "--n-repeats",
+        type=int,
+        default=3,
         help="Repetitions per (fraction, fold) for variance estimation",
     )
     parser.add_argument("--n-subjects", type=int, default=3)

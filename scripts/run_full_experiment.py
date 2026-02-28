@@ -10,12 +10,11 @@ Stages:
     3.  Baseline B – Riemannian + LDA (within-subject + LOSO)
     4.  Baseline C – CWT + ViT-Tiny (within-subject only)
     5.  Phase 2 – Dual-branch, attention fusion (within-subject + LOSO)
-    6.  Phase 2 – Dual-branch, concat fusion (within-subject)
-    7.  Phase 2 – Dual-branch, gated fusion (within-subject)
-    8.  Phase 3a – Pretrain ViT on PhysioNet (real data)
-    9.  Phase 3b – Finetune comparison (scratch / imagenet / transfer)
-    10. Phase 3c – Reduced-data experiment
-    11. Phase 4  – Compile, visualize, statistical tests
+    6.  Phase 2 – Dual-branch, gated fusion (within-subject)
+    7.  Phase 3a – Pretrain ViT on PhysioNet (real data)
+    8.  Phase 3b – Finetune comparison (scratch / imagenet / transfer)
+    9.  Phase 3c – Reduced-data experiment
+    10. Phase 4  – Compile, visualize, statistical tests
 
 All outputs go to a timestamped directory, e.g.::
     runs/2024-01-15_143022/
@@ -62,8 +61,10 @@ import numpy as np
 # Logging setup: tee to file + console
 # ---------------------------------------------------------------------------
 
+
 class _TeeHandler(logging.Handler):
     """Write log records to a file handle."""
+
     def __init__(self, fh):
         super().__init__()
         self._fh = fh
@@ -106,6 +107,7 @@ def setup_logging(log_path: Path) -> logging.Logger:
 # Banner helpers
 # ---------------------------------------------------------------------------
 
+
 def banner(msg: str, char: str = "=", width: int = 70) -> None:
     line = char * width
     print(f"\n{line}")
@@ -124,6 +126,7 @@ def skip_banner(name: str, path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Shared data loader (BCI IV-2a)
 # ---------------------------------------------------------------------------
+
 
 def load_bci_iv2a(
     data_dir: str,
@@ -202,6 +205,7 @@ def load_physionet(
 
 # ── Stage 1: Download / verify datasets ────────────────────────────────────
 
+
 def stage_download(args, run_dir: Path, log) -> None:
     """Trigger dataset download by loading 1 subject from each dataset."""
     banner("Downloading / verifying datasets")
@@ -224,6 +228,7 @@ def stage_download(args, run_dir: Path, log) -> None:
 
 
 # ── Stage 2: Baseline A – CSP + LDA ────────────────────────────────────────
+
 
 def stage_baseline_a(
     subject_data: dict,
@@ -250,7 +255,7 @@ def stage_baseline_a(
         csp = CSPFeatureExtractor(n_components=6, reg="ledoit_wolf")
         lda = LinearDiscriminantAnalysis()
         feats_train = csp.fit_transform(X_train, y_train)
-        feats_test  = csp.transform(X_test)
+        feats_test = csp.transform(X_test)
         lda.fit(feats_train, y_train)
         return lda.predict(feats_test), lda.predict_proba(feats_test)
 
@@ -259,17 +264,28 @@ def stage_baseline_a(
     log.info("Within-subject %d-fold CV...", n_folds)
     t0 = time.time()
     within = within_subject_cv_all(
-        subject_data, predict_fn, model_name=MODEL_NAME,
-        n_folds=n_folds, seed=seed,
+        subject_data,
+        predict_fn,
+        model_name=MODEL_NAME,
+        n_folds=n_folds,
+        seed=seed,
     )
-    log.info("Within-subject done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, within.mean_accuracy, within.std_accuracy)
+    log.info(
+        "Within-subject done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        within.mean_accuracy,
+        within.std_accuracy,
+    )
 
     log.info("LOSO CV...")
     t0 = time.time()
     loso = loso_cv(subject_data, predict_fn, model_name=MODEL_NAME)
-    log.info("LOSO done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, loso.mean_accuracy, loso.std_accuracy)
+    log.info(
+        "LOSO done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        loso.mean_accuracy,
+        loso.std_accuracy,
+    )
 
     results = {
         "model": MODEL_NAME,
@@ -298,6 +314,7 @@ def stage_baseline_a(
 
 # ── Stage 3: Baseline B – Riemannian + LDA ─────────────────────────────────
 
+
 def stage_baseline_b(
     subject_data: dict,
     run_dir: Path,
@@ -323,7 +340,7 @@ def stage_baseline_b(
         riemann = RiemannianFeatureExtractor(estimator="lwf", metric="riemann")
         lda = LinearDiscriminantAnalysis()
         feats_train = riemann.fit_transform(X_train, y_train)
-        feats_test  = riemann.transform(X_test)
+        feats_test = riemann.transform(X_test)
         lda.fit(feats_train, y_train)
         return lda.predict(feats_test), lda.predict_proba(feats_test)
 
@@ -332,17 +349,28 @@ def stage_baseline_b(
     log.info("Within-subject %d-fold CV...", n_folds)
     t0 = time.time()
     within = within_subject_cv_all(
-        subject_data, predict_fn, model_name=MODEL_NAME,
-        n_folds=n_folds, seed=seed,
+        subject_data,
+        predict_fn,
+        model_name=MODEL_NAME,
+        n_folds=n_folds,
+        seed=seed,
     )
-    log.info("Within-subject done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, within.mean_accuracy, within.std_accuracy)
+    log.info(
+        "Within-subject done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        within.mean_accuracy,
+        within.std_accuracy,
+    )
 
     log.info("LOSO CV...")
     t0 = time.time()
     loso = loso_cv(subject_data, predict_fn, model_name=MODEL_NAME)
-    log.info("LOSO done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, loso.mean_accuracy, loso.std_accuracy)
+    log.info(
+        "LOSO done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        loso.mean_accuracy,
+        loso.std_accuracy,
+    )
 
     results = {
         "model": MODEL_NAME,
@@ -370,6 +398,7 @@ def stage_baseline_b(
 
 
 # ── Stage 4: Baseline C – CWT + ViT-Tiny ───────────────────────────────────
+
 
 def stage_baseline_c(
     subject_data: dict,
@@ -402,8 +431,12 @@ def stage_baseline_c(
     SFREQ = 128.0
 
     spec_config = SpectrogramConfig(
-        wavelet="morl", freq_min=4.0, freq_max=40.0,
-        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+        wavelet="morl",
+        freq_min=4.0,
+        freq_max=40.0,
+        n_freqs=64,
+        image_size=(224, 224),
+        channel_mode="rgb_c3_cz_c4",
     )
     transform = CWTSpectrogramTransform(spec_config)
 
@@ -416,10 +449,8 @@ def stage_baseline_c(
     def predict_fn(X_train, y_train, X_test):
         set_seed(seed)
         imgs_train = epochs_to_imgs(X_train)
-        imgs_test  = epochs_to_imgs(X_test)
-        train_ds = TensorDataset(
-            torch.tensor(imgs_train), torch.tensor(y_train, dtype=torch.long)
-        )
+        imgs_test = epochs_to_imgs(X_test)
+        train_ds = TensorDataset(torch.tensor(imgs_train), torch.tensor(y_train, dtype=torch.long))
         test_ds = TensorDataset(
             torch.tensor(imgs_test),
             torch.tensor(np.zeros(len(X_test), dtype=np.int64), dtype=torch.long),
@@ -427,19 +458,27 @@ def stage_baseline_c(
         test_loader = DataLoader(test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
 
         model_config = ModelConfig(
-            vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
-            vit_drop_rate=0.1, n_classes=2,
+            vit_model_name="vit_tiny_patch16_224",
+            vit_pretrained=True,
+            vit_drop_rate=0.1,
+            n_classes=2,
         )
         model = ViTBranch(config=model_config, as_feature_extractor=False)
         model.freeze_backbone(unfreeze_last_n_blocks=2)
 
         trainer = Trainer(
-            model=model, device=device,
-            learning_rate=1e-4, weight_decay=1e-4,
-            epochs=epochs, batch_size=batch_size,
-            warmup_epochs=5, patience=10,
-            label_smoothing=0.1, val_fraction=0.2,
-            seed=seed, num_workers=0,
+            model=model,
+            device=device,
+            learning_rate=1e-4,
+            weight_decay=1e-4,
+            epochs=epochs,
+            batch_size=batch_size,
+            warmup_epochs=5,
+            patience=10,
+            label_smoothing=0.1,
+            val_fraction=0.2,
+            seed=seed,
+            num_workers=0,
         )
         trainer.fit(train_ds, model_tag="baseline_c_fold")
         return trainer.predict(test_loader)
@@ -448,11 +487,18 @@ def stage_baseline_c(
     log.info("Within-subject %d-fold CV (ViT)...", n_folds)
     t0 = time.time()
     within = within_subject_cv_all(
-        subject_data, predict_fn, model_name=MODEL_NAME,
-        n_folds=n_folds, seed=seed,
+        subject_data,
+        predict_fn,
+        model_name=MODEL_NAME,
+        n_folds=n_folds,
+        seed=seed,
     )
-    log.info("Baseline C done in %.1fs: %.2f%% ± %.2f%%",
-             time.time() - t0, within.mean_accuracy, within.std_accuracy)
+    log.info(
+        "Baseline C done in %.1fs: %.2f%% ± %.2f%%",
+        time.time() - t0,
+        within.mean_accuracy,
+        within.std_accuracy,
+    )
 
     results = {
         "model": MODEL_NAME,
@@ -473,9 +519,10 @@ def stage_baseline_c(
 
 # ── Stage 5/6/7: Dual-branch (one fusion method) ───────────────────────────
 
+
 def stage_dual_branch(
     fusion: str,
-    strategy: str,           # "within_subject" or "loso"
+    strategy: str,  # "within_subject" or "loso"
     subject_data: dict,
     run_dir: Path,
     n_folds: int,
@@ -509,24 +556,30 @@ def stage_dual_branch(
     MODEL_NAME = "DualBranch-ViT+CSP+Riemann"
 
     builder = DualBranchFoldBuilder(
-        csp_n_components=6, csp_reg="ledoit_wolf",
-        riemann_estimator="lwf", riemann_metric="riemann",
-        sfreq=128.0, channel_names=["C3", "Cz", "C4"],
+        csp_n_components=6,
+        csp_reg="ledoit_wolf",
+        riemann_estimator="lwf",
+        riemann_metric="riemann",
+        sfreq=128.0,
+        channel_names=["C3", "Cz", "C4"],
     )
 
     _device = torch.device(device)
 
     def train_and_eval_fold(fold_idx, subject_id, X_train, y_train, X_test, y_test):
         set_seed(seed + fold_idx)
-        train_ds, test_ds, math_input_dim = builder.build_fold(
-            X_train, y_train, X_test, y_test
-        )
+        train_ds, test_ds, math_input_dim = builder.build_fold(X_train, y_train, X_test, y_test)
         model_config = ModelConfig(
-            vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
-            vit_drop_rate=0.1, csp_n_components=6,
-            math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method=fusion, fused_dim=128,
-            classifier_hidden_dim=64, n_classes=2,
+            vit_model_name="vit_tiny_patch16_224",
+            vit_pretrained=True,
+            vit_drop_rate=0.1,
+            csp_n_components=6,
+            math_hidden_dims=[256, 128],
+            math_drop_rate=0.3,
+            fusion_method=fusion,
+            fused_dim=128,
+            classifier_hidden_dim=64,
+            n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=model_config)
         model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
@@ -536,12 +589,18 @@ def stage_dual_branch(
             return model(imgs.to(_device), feats.to(_device)), labels.to(_device)
 
         trainer = Trainer(
-            model=model, device=device,
-            learning_rate=1e-4, weight_decay=1e-4,
-            epochs=epochs, batch_size=batch_size,
-            warmup_epochs=5, patience=10,
-            label_smoothing=0.1, val_fraction=0.2,
-            seed=seed, num_workers=0,
+            model=model,
+            device=device,
+            learning_rate=1e-4,
+            weight_decay=1e-4,
+            epochs=epochs,
+            batch_size=batch_size,
+            warmup_epochs=5,
+            patience=10,
+            label_smoothing=0.1,
+            val_fraction=0.2,
+            seed=seed,
+            num_workers=0,
         )
         trainer.fit(train_ds, forward_fn=dual_fwd, model_tag=f"dual_{fusion}_f{fold_idx}")
 
@@ -549,14 +608,24 @@ def stage_dual_branch(
         y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_fwd)
         m = compute_metrics(y_test, y_pred, y_prob)
         fr = FoldResult(
-            fold=fold_idx, subject=subject_id,
-            accuracy=m["accuracy"], kappa=m["kappa"], f1_macro=m["f1_macro"],
-            n_train=len(y_train), n_test=len(y_test),
-            y_true=y_test, y_pred=y_pred, y_prob=y_prob,
+            fold=fold_idx,
+            subject=subject_id,
+            accuracy=m["accuracy"],
+            kappa=m["kappa"],
+            f1_macro=m["f1_macro"],
+            n_train=len(y_train),
+            n_test=len(y_test),
+            y_true=y_test,
+            y_pred=y_pred,
+            y_prob=y_prob,
         )
-        log.info("  Fold %d [S%s]: acc=%.2f%%  kappa=%.3f",
-                 fold_idx, f"{subject_id:02d}" if subject_id is not None else "?",
-                 fr.accuracy, fr.kappa)
+        log.info(
+            "  Fold %d [S%s]: acc=%.2f%%  kappa=%.3f",
+            fold_idx,
+            f"{subject_id:02d}" if subject_id is not None else "?",
+            fr.accuracy,
+            fr.kappa,
+        )
         return fr
 
     t0 = time.time()
@@ -569,8 +638,12 @@ def stage_dual_branch(
             skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
             for train_idx, test_idx in skf.split(X, y):
                 fr = train_and_eval_fold(
-                    fold_counter, sid,
-                    X[train_idx], y[train_idx], X[test_idx], y[test_idx],
+                    fold_counter,
+                    sid,
+                    X[train_idx],
+                    y[train_idx],
+                    X[test_idx],
+                    y[test_idx],
                 )
                 all_folds.append(fr)
                 fold_counter += 1
@@ -584,14 +657,25 @@ def stage_dual_branch(
             X_test, y_test = subject_data[test_sid]
             log.info("LOSO fold %d/%d: test=S%02d", fold_idx + 1, len(subjects), test_sid)
             fr = train_and_eval_fold(
-                fold_idx, test_sid, X_train, y_train, X_test, y_test,
+                fold_idx,
+                test_sid,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
             )
             all_folds.append(fr)
 
     elapsed = time.time() - t0
     result = CVResult(strategy=strategy, model_name=MODEL_NAME, folds=all_folds)
-    log.info("Dual-branch [%s] %s done in %.1fs: %.2f%% ± %.2f%%",
-             fusion, strategy, elapsed, result.mean_accuracy, result.std_accuracy)
+    log.info(
+        "Dual-branch [%s] %s done in %.1fs: %.2f%% ± %.2f%%",
+        fusion,
+        strategy,
+        elapsed,
+        result.mean_accuracy,
+        result.std_accuracy,
+    )
 
     data = {
         "model": MODEL_NAME,
@@ -613,6 +697,7 @@ def stage_dual_branch(
 
 # ── Stage 8: Pretrain ViT on PhysioNet ─────────────────────────────────────
 
+
 def stage_pretrain(
     run_dir: Path,
     n_subjects: int,
@@ -623,7 +708,7 @@ def stage_pretrain(
     log,
 ) -> Path:
     checkpoint_path = run_dir / "checkpoints" / "vit_pretrained_physionet.pt"
-    out_path        = run_dir / "results" / "real_pretrain_physionet.json"
+    out_path = run_dir / "results" / "real_pretrain_physionet.json"
     if checkpoint_path.exists() and out_path.exists():
         skip_banner("Phase 3a: Pretrain ViT on PhysioNet", checkpoint_path)
         return checkpoint_path
@@ -641,15 +726,17 @@ def stage_pretrain(
 
     set_seed(seed)
 
-    source_data, channel_names, sfreq = load_physionet(
-        n_subjects=n_subjects, logger=log
-    )
+    source_data, channel_names, sfreq = load_physionet(n_subjects=n_subjects, logger=log)
     if not source_data:
         raise RuntimeError("PhysioNet data load failed — cannot pretrain.")
 
     spec_config = SpectrogramConfig(
-        wavelet="morl", freq_min=4.0, freq_max=40.0,
-        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+        wavelet="morl",
+        freq_min=4.0,
+        freq_max=40.0,
+        n_freqs=64,
+        image_size=(224, 224),
+        channel_mode="rgb_c3_cz_c4",
     )
     transform = CWTSpectrogramTransform(spec_config)
 
@@ -669,17 +756,17 @@ def stage_pretrain(
     n_train = len(all_y) - n_val
     log.info("Generating CWT spectrograms for %d train trials...", n_train)
     imgs_train = to_imgs(all_X[:n_train])
-    imgs_val   = to_imgs(all_X[n_train:])
+    imgs_val = to_imgs(all_X[n_train:])
     train_ds = TensorDataset(
         torch.tensor(imgs_train), torch.tensor(all_y[:n_train], dtype=torch.long)
     )
-    val_ds = TensorDataset(
-        torch.tensor(imgs_val), torch.tensor(all_y[n_train:], dtype=torch.long)
-    )
+    val_ds = TensorDataset(torch.tensor(imgs_val), torch.tensor(all_y[n_train:], dtype=torch.long))
 
     model_config = ModelConfig(
-        vit_model_name="vit_tiny_patch16_224", vit_pretrained=True,
-        vit_drop_rate=0.1, n_classes=2,
+        vit_model_name="vit_tiny_patch16_224",
+        vit_pretrained=True,
+        vit_drop_rate=0.1,
+        n_classes=2,
     )
     model = ViTBranch(config=model_config, as_feature_extractor=False)
     _device = torch.device(device)
@@ -689,12 +776,18 @@ def stage_pretrain(
         return model(imgs.to(_device)), labels.to(_device)
 
     trainer = Trainer(
-        model=model, device=device,
-        learning_rate=1e-4, weight_decay=1e-4,
-        epochs=epochs, batch_size=batch_size,
-        warmup_epochs=5, patience=10,
-        label_smoothing=0.1, val_fraction=0.2,
-        seed=seed, num_workers=0,
+        model=model,
+        device=device,
+        learning_rate=1e-4,
+        weight_decay=1e-4,
+        epochs=epochs,
+        batch_size=batch_size,
+        warmup_epochs=5,
+        patience=10,
+        label_smoothing=0.1,
+        val_fraction=0.2,
+        seed=seed,
+        num_workers=0,
     )
     t0 = time.time()
     trainer.fit(train_ds, forward_fn=fwd, model_tag="vit_pretrain")
@@ -732,6 +825,7 @@ def stage_pretrain(
 
 # ── Stage 9: Finetune comparison (scratch / imagenet / transfer) ────────────
 
+
 def stage_finetune(
     subject_data: dict,
     run_dir: Path,
@@ -762,9 +856,12 @@ def stage_finetune(
     FUSION = "attention"
 
     builder = DualBranchFoldBuilder(
-        csp_n_components=6, csp_reg="ledoit_wolf",
-        riemann_estimator="lwf", riemann_metric="riemann",
-        sfreq=128.0, channel_names=["C3", "Cz", "C4"],
+        csp_n_components=6,
+        csp_reg="ledoit_wolf",
+        riemann_estimator="lwf",
+        riemann_metric="riemann",
+        sfreq=128.0,
+        channel_names=["C3", "Cz", "C4"],
     )
     _device = torch.device(device)
 
@@ -773,17 +870,19 @@ def stage_finetune(
         model_config = ModelConfig(
             vit_model_name="vit_tiny_patch16_224",
             vit_pretrained=use_imagenet,
-            vit_drop_rate=0.1, csp_n_components=6,
-            math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method=FUSION, fused_dim=128,
-            classifier_hidden_dim=64, n_classes=2,
+            vit_drop_rate=0.1,
+            csp_n_components=6,
+            math_hidden_dims=[256, 128],
+            math_drop_rate=0.3,
+            fusion_method=FUSION,
+            fused_dim=128,
+            classifier_hidden_dim=64,
+            n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=model_config)
         if condition == "transfer":
             ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-            backbone_state = {
-                k: v for k, v in ckpt.items() if not k.startswith("backbone.head")
-            }
+            backbone_state = {k: v for k, v in ckpt.items() if not k.startswith("backbone.head")}
             model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
             model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
         elif condition == "imagenet":
@@ -819,15 +918,22 @@ def stage_finetune(
                     return _m(imgs.to(_device), feats.to(_device)), labels.to(_device)
 
                 trainer = Trainer(
-                    model=model, device=device,
-                    learning_rate=1e-4, weight_decay=1e-4,
-                    epochs=epochs, batch_size=batch_size,
-                    warmup_epochs=5, patience=10,
-                    label_smoothing=0.1, val_fraction=0.2,
-                    seed=seed, num_workers=0,
+                    model=model,
+                    device=device,
+                    learning_rate=1e-4,
+                    weight_decay=1e-4,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    warmup_epochs=5,
+                    patience=10,
+                    label_smoothing=0.1,
+                    val_fraction=0.2,
+                    seed=seed,
+                    num_workers=0,
                 )
                 trainer.fit(
-                    train_ds, forward_fn=dual_fwd,
+                    train_ds,
+                    forward_fn=dual_fwd,
                     model_tag=f"{condition}_f{fold_counter}",
                 )
                 test_loader = DataLoader(
@@ -836,14 +942,24 @@ def stage_finetune(
                 y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_fwd)
                 m = compute_metrics(y[test_idx], y_pred, y_prob)
                 fr = FoldResult(
-                    fold=fold_counter, subject=sid,
-                    accuracy=m["accuracy"], kappa=m["kappa"], f1_macro=m["f1_macro"],
-                    n_train=len(train_idx), n_test=len(test_idx),
-                    y_true=y[test_idx], y_pred=y_pred, y_prob=y_prob,
+                    fold=fold_counter,
+                    subject=sid,
+                    accuracy=m["accuracy"],
+                    kappa=m["kappa"],
+                    f1_macro=m["f1_macro"],
+                    n_train=len(train_idx),
+                    n_test=len(test_idx),
+                    y_true=y[test_idx],
+                    y_pred=y_pred,
+                    y_prob=y_prob,
                 )
                 log.info(
                     "  [%s] Fold %d S%02d: acc=%.2f%%  kappa=%.3f",
-                    condition.upper(), fold_counter, sid, fr.accuracy, fr.kappa,
+                    condition.upper(),
+                    fold_counter,
+                    sid,
+                    fr.accuracy,
+                    fr.kappa,
                 )
                 all_folds.append(fr)
                 fold_counter += 1
@@ -854,8 +970,13 @@ def stage_finetune(
             folds=all_folds,
         )
         elapsed = time.time() - t0
-        log.info("[%s] Done in %.1fs: %.2f%% ± %.2f%%",
-                 condition.upper(), elapsed, result.mean_accuracy, result.std_accuracy)
+        log.info(
+            "[%s] Done in %.1fs: %.2f%% ± %.2f%%",
+            condition.upper(),
+            elapsed,
+            result.mean_accuracy,
+            result.std_accuracy,
+        )
 
         data = {
             "model": f"{MODEL_NAME}-{condition}",
@@ -877,6 +998,7 @@ def stage_finetune(
 
 
 # ── Stage 10: Reduced-data experiment ──────────────────────────────────────
+
 
 def stage_reduced_data(
     subject_data: dict,
@@ -909,9 +1031,12 @@ def stage_reduced_data(
     from bci.utils.seed import set_seed
 
     builder = DualBranchFoldBuilder(
-        csp_n_components=6, csp_reg="ledoit_wolf",
-        riemann_estimator="lwf", riemann_metric="riemann",
-        sfreq=128.0, channel_names=["C3", "Cz", "C4"],
+        csp_n_components=6,
+        csp_reg="ledoit_wolf",
+        riemann_estimator="lwf",
+        riemann_metric="riemann",
+        sfreq=128.0,
+        channel_names=["C3", "Cz", "C4"],
     )
     _device = torch.device(device)
 
@@ -920,17 +1045,19 @@ def stage_reduced_data(
         model_config = ModelConfig(
             vit_model_name="vit_tiny_patch16_224",
             vit_pretrained=use_imagenet,
-            vit_drop_rate=0.1, csp_n_components=6,
-            math_hidden_dims=[256, 128], math_drop_rate=0.3,
-            fusion_method="attention", fused_dim=128,
-            classifier_hidden_dim=64, n_classes=2,
+            vit_drop_rate=0.1,
+            csp_n_components=6,
+            math_hidden_dims=[256, 128],
+            math_drop_rate=0.3,
+            fusion_method="attention",
+            fused_dim=128,
+            classifier_hidden_dim=64,
+            n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=model_config)
         if condition == "transfer":
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-            backbone_state = {
-                k: v for k, v in ckpt.items() if not k.startswith("backbone.head")
-            }
+            backbone_state = {k: v for k, v in ckpt.items() if not k.startswith("backbone.head")}
             model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
             model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
         return model
@@ -965,7 +1092,7 @@ def stage_reduced_data(
                             )
                             keep_idx, _ = next(sss.split(X_train_full, y_train_full))
                             X_train = X_train_full[keep_idx]
-                            y_train  = y_train_full[keep_idx]
+                            y_train = y_train_full[keep_idx]
                         else:
                             X_train, y_train = X_train_full, y_train_full
 
@@ -973,9 +1100,7 @@ def stage_reduced_data(
                             train_ds, test_ds, math_input_dim = builder.build_fold(
                                 X_train, y_train, X_test, y_test
                             )
-                            model = build_model(
-                                condition, math_input_dim, checkpoint_path
-                            )
+                            model = build_model(condition, math_input_dim, checkpoint_path)
 
                             def dual_fwd(batch, _m=model):
                                 imgs, feats, labels = batch
@@ -985,37 +1110,53 @@ def stage_reduced_data(
                                 )
 
                             trainer = Trainer(
-                                model=model, device=device,
-                                learning_rate=1e-4, weight_decay=1e-4,
-                                epochs=epochs, batch_size=batch_size,
-                                warmup_epochs=3, patience=8,
-                                label_smoothing=0.1, val_fraction=0.2,
-                                seed=trial_seed, num_workers=0,
+                                model=model,
+                                device=device,
+                                learning_rate=1e-4,
+                                weight_decay=1e-4,
+                                epochs=epochs,
+                                batch_size=batch_size,
+                                warmup_epochs=3,
+                                patience=8,
+                                label_smoothing=0.1,
+                                val_fraction=0.2,
+                                seed=trial_seed,
+                                num_workers=0,
                             )
                             trainer.fit(
-                                train_ds, forward_fn=dual_fwd,
+                                train_ds,
+                                forward_fn=dual_fwd,
                                 model_tag=f"{condition}_f{fraction:.0%}",
                             )
                             test_loader = DataLoader(
-                                test_ds, batch_size=batch_size * 2,
-                                shuffle=False, num_workers=0,
+                                test_ds,
+                                batch_size=batch_size * 2,
+                                shuffle=False,
+                                num_workers=0,
                             )
-                            y_pred, y_prob = trainer.predict(
-                                test_loader, forward_fn=dual_fwd
-                            )
+                            y_pred, y_prob = trainer.predict(test_loader, forward_fn=dual_fwd)
                             m = compute_metrics(y_test, y_pred, y_prob)
                             acc = m["accuracy"]
                         except Exception as e:
                             log.warning(
                                 "Trial failed (S%d fold%d rep%d %s): %s",
-                                sid, fold_i, rep, condition, e,
+                                sid,
+                                fold_i,
+                                rep,
+                                condition,
+                                e,
                             )
                             acc = float("nan")
 
                         cond_accs[condition].append(acc)
                         log.info(
                             "  %s | S%02d fold%d rep%d | frac=%.0f%% | acc=%.2f%%",
-                            condition.upper(), sid, fold_i, rep, fraction * 100, acc,
+                            condition.upper(),
+                            sid,
+                            fold_i,
+                            rep,
+                            fraction * 100,
+                            acc,
                         )
 
         for condition in conditions:
@@ -1029,7 +1170,8 @@ def stage_reduced_data(
             }
             log.info(
                 "  %s @ %.0f%%: %.2f%% ± %.2f%% (n=%d)",
-                condition.upper(), fraction * 100,
+                condition.upper(),
+                fraction * 100,
                 results[condition][frac_str]["mean"],
                 results[condition][frac_str]["std"],
                 len(accs),
@@ -1060,21 +1202,29 @@ def stage_reduced_data(
 
 # ── Stage 11: Phase 4 – compile + visualize + stats ────────────────────────
 
+
 def stage_phase4(run_dir: Path, log) -> None:
     """Run all three phase 4 analysis steps."""
-    results_dir  = run_dir / "results"
-    figures_dir  = run_dir / "figures"
+    results_dir = run_dir / "results"
+    figures_dir = run_dir / "figures"
     summary_path = results_dir / "phase4_summary.json"
 
     # Step 4a: compile
     compile_path = Path(__file__).parent / "phase4_compile_results.py"
     import subprocess, sys
+
     log.info("Running phase4_compile_results.py...")
     result = subprocess.run(
-        [sys.executable, str(compile_path),
-         "--results-dir", str(results_dir),
-         "--output", str(summary_path),
-         "--prefix", "real_"],
+        [
+            sys.executable,
+            str(compile_path),
+            "--results-dir",
+            str(results_dir),
+            "--output",
+            str(summary_path),
+            "--prefix",
+            "real_",
+        ],
         capture_output=False,
     )
     if result.returncode != 0:
@@ -1084,9 +1234,14 @@ def stage_phase4(run_dir: Path, log) -> None:
     viz_path = Path(__file__).parent / "phase4_visualize.py"
     log.info("Running phase4_visualize.py...")
     result = subprocess.run(
-        [sys.executable, str(viz_path),
-         "--summary", str(summary_path),
-         "--output-dir", str(figures_dir)],
+        [
+            sys.executable,
+            str(viz_path),
+            "--summary",
+            str(summary_path),
+            "--output-dir",
+            str(figures_dir),
+        ],
         capture_output=False,
     )
     if result.returncode != 0:
@@ -1096,9 +1251,14 @@ def stage_phase4(run_dir: Path, log) -> None:
     stats_path = Path(__file__).parent / "phase4_stats.py"
     log.info("Running phase4_stats.py...")
     result = subprocess.run(
-        [sys.executable, str(stats_path),
-         "--summary", str(summary_path),
-         "--output", str(results_dir / "phase4_stats.json")],
+        [
+            sys.executable,
+            str(stats_path),
+            "--summary",
+            str(summary_path),
+            "--output",
+            str(results_dir / "phase4_stats.json"),
+        ],
         capture_output=False,
     )
     if result.returncode != 0:
@@ -1108,6 +1268,7 @@ def stage_phase4(run_dir: Path, log) -> None:
 # ---------------------------------------------------------------------------
 # Final summary print
 # ---------------------------------------------------------------------------
+
 
 def print_final_summary(run_dir: Path, t_start: float, log) -> None:
     elapsed = time.time() - t_start
@@ -1132,11 +1293,11 @@ def print_final_summary(run_dir: Path, t_start: float, log) -> None:
             return d.get(key) if d else None
 
         rows = [
-            ("Baseline A: CSP+LDA",    summary.get("baselines", {}).get("csp_lda")),
-            ("Baseline B: Riemannian",  summary.get("baselines", {}).get("riemannian")),
-            ("Baseline C: ViT-only",    summary.get("baselines", {}).get("vit_only")),
+            ("Baseline A: CSP+LDA", summary.get("baselines", {}).get("csp_lda")),
+            ("Baseline B: Riemannian", summary.get("baselines", {}).get("riemannian")),
+            ("Baseline C: ViT-only", summary.get("baselines", {}).get("vit_only")),
             ("Dual-Branch (attention)", summary.get("dual_branch", {}).get("attention")),
-            ("Transfer: EEG-Pretrain",  summary.get("transfer_learning", {}).get("transfer")),
+            ("Transfer: EEG-Pretrain", summary.get("transfer_learning", {}).get("transfer")),
         ]
         for name, d in rows:
             acc = _acc(d)
@@ -1152,6 +1313,7 @@ def print_final_summary(run_dir: Path, t_start: float, log) -> None:
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Full overnight experiment runner for BCI thesis.",
@@ -1161,49 +1323,61 @@ def parse_args() -> argparse.Namespace:
         "--run-dir",
         default=None,
         help="Resume from an existing run directory (skips completed stages). "
-             "If omitted, a new timestamped directory is created.",
+        "If omitted, a new timestamped directory is created.",
     )
     p.add_argument("--data-dir", default="~/mne_data", help="MNE data directory")
-    p.add_argument("--device",   default="auto",       help="Device: auto | cpu | cuda | mps")
-    p.add_argument("--seed",     type=int, default=42)
-    p.add_argument("--n-folds",  type=int, default=5,  help="CV folds (within-subject)")
-    p.add_argument("--epochs",   type=int, default=50, help="Max training epochs per fold")
+    p.add_argument("--device", default="auto", help="Device: auto | cpu | cuda | mps")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--n-folds", type=int, default=5, help="CV folds (within-subject)")
+    p.add_argument("--epochs", type=int, default=50, help="Max training epochs per fold")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument(
-        "--pretrain-subjects", type=int, default=None,
+        "--pretrain-subjects",
+        type=int,
+        default=None,
         help="Max PhysioNet subjects for pretraining (None = all 109)",
     )
     p.add_argument(
-        "--n-repeats", type=int, default=3,
+        "--n-repeats",
+        type=int,
+        default=3,
         help="Repetitions per fraction in reduced-data experiment",
     )
     p.add_argument(
-        "--fractions", nargs="+", type=float,
+        "--fractions",
+        nargs="+",
+        type=float,
         default=[0.10, 0.25, 0.50, 0.75, 1.00],
         help="Training-set fractions for reduced-data experiment",
     )
     p.add_argument(
-        "--skip-download", action="store_true",
+        "--skip-download",
+        action="store_true",
         help="Skip Stage 1 dataset verification (assume data is present)",
     )
     p.add_argument(
-        "--skip-baselines", action="store_true",
+        "--skip-baselines",
+        action="store_true",
         help="Skip Stages 2-4 (CSP/Riemannian/ViT baselines)",
     )
     p.add_argument(
-        "--skip-dual-branch", action="store_true",
-        help="Skip Stages 5-7 (dual-branch fusion ablation)",
+        "--skip-dual-branch",
+        action="store_true",
+        help="Skip Stages 5-6 (dual-branch fusion ablation)",
     )
     p.add_argument(
-        "--skip-transfer", action="store_true",
-        help="Skip Stages 8-10 (pretrain / finetune / reduced-data)",
+        "--skip-transfer",
+        action="store_true",
+        help="Skip Stages 7-9 (pretrain / finetune / reduced-data)",
     )
     p.add_argument(
-        "--skip-phase4", action="store_true",
-        help="Skip Stage 11 (compile / visualize / stats)",
+        "--skip-phase4",
+        action="store_true",
+        help="Skip Stage 10 (compile / visualize / stats)",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Download data and print the plan, then exit without training.",
     )
     return p.parse_args()
@@ -1212,6 +1386,7 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     args = parse_args()
@@ -1232,12 +1407,13 @@ def main() -> None:
 
     # --- Device ---
     from bci.utils.seed import get_device, set_seed
+
     device = get_device(args.device)
     log.info("Device: %s", device)
 
     t_start = time.time()
 
-    TOTAL_STAGES = 11
+    TOTAL_STAGES = 10
 
     # ── Stage 1: Download ─────────────────────────────────────────────────
     stage_n = 1
@@ -1280,8 +1456,14 @@ def main() -> None:
     stage_banner(stage_n, TOTAL_STAGES, "Baseline C: CWT + ViT-Tiny")
     if not args.skip_baselines:
         stage_baseline_c(
-            subject_data, run_dir, args.n_folds, args.epochs,
-            args.batch_size, device, args.seed, log,
+            subject_data,
+            run_dir,
+            args.n_folds,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
     else:
         log.info("Stage 4 skipped (--skip-baselines).")
@@ -1291,53 +1473,73 @@ def main() -> None:
     stage_banner(stage_n, TOTAL_STAGES, "Phase 2: Dual-branch, attention fusion (within + LOSO)")
     if not args.skip_dual_branch:
         stage_dual_branch(
-            "attention", "within_subject", subject_data, run_dir,
-            args.n_folds, args.epochs, args.batch_size, device, args.seed, log,
+            "attention",
+            "within_subject",
+            subject_data,
+            run_dir,
+            args.n_folds,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
         stage_dual_branch(
-            "attention", "loso", subject_data, run_dir,
-            args.n_folds, args.epochs, args.batch_size, device, args.seed, log,
+            "attention",
+            "loso",
+            subject_data,
+            run_dir,
+            args.n_folds,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
     else:
         log.info("Stage 5 skipped (--skip-dual-branch).")
 
-    # ── Stage 6: Dual-branch concat ───────────────────────────────────────
+    # ── Stage 6: Dual-branch gated ────────────────────────────────────────
     stage_n = 6
-    stage_banner(stage_n, TOTAL_STAGES, "Phase 2: Dual-branch, concat fusion")
+    stage_banner(stage_n, TOTAL_STAGES, "Phase 2: Dual-branch, gated fusion")
     if not args.skip_dual_branch:
         stage_dual_branch(
-            "concat", "within_subject", subject_data, run_dir,
-            args.n_folds, args.epochs, args.batch_size, device, args.seed, log,
+            "gated",
+            "within_subject",
+            subject_data,
+            run_dir,
+            args.n_folds,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
     else:
         log.info("Stage 6 skipped (--skip-dual-branch).")
 
-    # ── Stage 7: Dual-branch gated ────────────────────────────────────────
+    # ── Stage 7: Pretrain ViT on PhysioNet ────────────────────────────────
     stage_n = 7
-    stage_banner(stage_n, TOTAL_STAGES, "Phase 2: Dual-branch, gated fusion")
-    if not args.skip_dual_branch:
-        stage_dual_branch(
-            "gated", "within_subject", subject_data, run_dir,
-            args.n_folds, args.epochs, args.batch_size, device, args.seed, log,
-        )
-    else:
-        log.info("Stage 7 skipped (--skip-dual-branch).")
-
-    # ── Stage 8: Pretrain ViT on PhysioNet ────────────────────────────────
-    stage_n = 8
     stage_banner(stage_n, TOTAL_STAGES, "Phase 3a: Pretrain ViT on PhysioNet")
     if not args.skip_transfer:
         checkpoint_path = stage_pretrain(
-            run_dir, args.pretrain_subjects, args.epochs,
-            args.batch_size, device, args.seed, log,
+            run_dir,
+            args.pretrain_subjects,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
     else:
         checkpoint_path = run_dir / "checkpoints" / "vit_pretrained_physionet.pt"
-        log.info("Stage 8 skipped (--skip-transfer). Checkpoint: %s", checkpoint_path)
+        log.info("Stage 7 skipped (--skip-transfer). Checkpoint: %s", checkpoint_path)
 
-    # ── Stage 9: Finetune comparison ──────────────────────────────────────
-    stage_n = 9
-    stage_banner(stage_n, TOTAL_STAGES, "Phase 3b: Finetune comparison (scratch / imagenet / transfer)")
+    # ── Stage 8: Finetune comparison ──────────────────────────────────────
+    stage_n = 8
+    stage_banner(
+        stage_n, TOTAL_STAGES, "Phase 3b: Finetune comparison (scratch / imagenet / transfer)"
+    )
     if not args.skip_transfer:
         if not checkpoint_path.exists():
             log.warning(
@@ -1349,34 +1551,50 @@ def main() -> None:
         else:
             conditions = ["scratch", "imagenet", "transfer"]
         stage_finetune(
-            subject_data, run_dir, checkpoint_path, conditions,
-            args.n_folds, args.epochs, args.batch_size, device, args.seed, log,
+            subject_data,
+            run_dir,
+            checkpoint_path,
+            conditions,
+            args.n_folds,
+            args.epochs,
+            args.batch_size,
+            device,
+            args.seed,
+            log,
         )
     else:
-        log.info("Stage 9 skipped (--skip-transfer).")
+        log.info("Stage 8 skipped (--skip-transfer).")
 
-    # ── Stage 10: Reduced-data experiment ─────────────────────────────────
-    stage_n = 10
+    # ── Stage 9: Reduced-data experiment ─────────────────────────────────
+    stage_n = 9
     stage_banner(stage_n, TOTAL_STAGES, "Phase 3c: Reduced-data experiment")
     if not args.skip_transfer:
         if not checkpoint_path.exists():
             log.warning("Checkpoint not found; skipping reduced-data transfer condition.")
         else:
             stage_reduced_data(
-                subject_data, run_dir, checkpoint_path,
-                args.fractions, args.n_repeats, args.n_folds,
-                args.epochs, args.batch_size, device, args.seed, log,
+                subject_data,
+                run_dir,
+                checkpoint_path,
+                args.fractions,
+                args.n_repeats,
+                args.n_folds,
+                args.epochs,
+                args.batch_size,
+                device,
+                args.seed,
+                log,
             )
     else:
-        log.info("Stage 10 skipped (--skip-transfer).")
+        log.info("Stage 9 skipped (--skip-transfer).")
 
-    # ── Stage 11: Phase 4 analysis ────────────────────────────────────────
-    stage_n = 11
+    # ── Stage 10: Phase 4 analysis ────────────────────────────────────────
+    stage_n = 10
     stage_banner(stage_n, TOTAL_STAGES, "Phase 4: Compile + visualize + stats")
     if not args.skip_phase4:
         stage_phase4(run_dir, log)
     else:
-        log.info("Stage 11 skipped (--skip-phase4).")
+        log.info("Stage 10 skipped (--skip-phase4).")
 
     # --- Final summary ---
     print_final_summary(run_dir, t_start, log)

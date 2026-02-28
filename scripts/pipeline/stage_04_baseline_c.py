@@ -1,21 +1,15 @@
-"""Stage 4 – Baseline C: CWT + image backbone (within-subject only).
+"""Stage 4 – Baseline C: CWT + ViT-Tiny image backbone (within-subject only).
 
 Converts EEG epochs to Morlet CWT spectrograms (C3→R, Cz→G, C4→B) and
-fine-tunes an image backbone classifier. Within-subject 5-fold CV only.
-
-Supported backbones (--backbone):
-  vit_tiny_patch16_224  (default – ViT-Tiny, used as standalone ViT baseline)
-  efficientnet_b0
+fine-tunes a ViT-Tiny classifier. Within-subject 5-fold CV only.
 
 Output:
-  <run-dir>/results/real_baseline_c_<backbone_short>.json
+  <run-dir>/results/real_baseline_c_vit.json
   <run-dir>/plots/stage_04/  (training curves + confusion matrices per fold)
 
 Usage::
 
     uv run python scripts/pipeline/stage_04_baseline_c.py --run-dir runs/my_run
-    uv run python scripts/pipeline/stage_04_baseline_c.py --run-dir runs/my_run \\
-        --backbone efficientnet_b0 --epochs 50 --batch-size 32 --device cuda
 """
 
 from __future__ import annotations
@@ -29,10 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-# Short tag used in filenames: maps timm model name → short label
+# Short tag used in filenames
 _BACKBONE_SHORT = {
     "vit_tiny_patch16_224": "vit",
-    "efficientnet_b0":      "efficientnet",
 }
 
 
@@ -41,13 +34,13 @@ def parse_args() -> argparse.Namespace:
         description="Stage 4: Baseline C – CWT + image backbone.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--run-dir",    required=True, help="Run directory (results saved here)")
-    p.add_argument("--data-dir",   default="~/mne_data")
-    p.add_argument("--device",     default="auto", help="auto | cpu | cuda | mps")
-    p.add_argument("--epochs",     type=int, default=50)
+    p.add_argument("--run-dir", required=True, help="Run directory (results saved here)")
+    p.add_argument("--data-dir", default="~/mne_data")
+    p.add_argument("--device", default="auto", help="auto | cpu | cuda | mps")
+    p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--n-folds",    type=int, default=5)
-    p.add_argument("--seed",       type=int, default=42)
+    p.add_argument("--n-folds", type=int, default=5)
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--backbone",
         default="vit_tiny_patch16_224",
@@ -65,8 +58,7 @@ def parse_args() -> argparse.Namespace:
 
 def setup_logging(run_dir: Path, log_name: str) -> logging.Logger:
     fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
-    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S",
-                        stream=sys.stdout)
+    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
     for lib in ("mne", "pyriemann", "timm", "matplotlib", "moabb"):
         logging.getLogger(lib).setLevel(logging.ERROR)
     log = logging.getLogger("stage_04")
@@ -110,6 +102,7 @@ def save_fold_plots(
 ) -> None:
     """Save training curves and confusion matrix for one fold."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from sklearn.metrics import confusion_matrix
@@ -121,14 +114,19 @@ def save_fold_plots(
     # ── Training curves ──────────────────────────────────────────────────
     epochs_range = [r.epoch for r in history]
     train_losses = [r.train_loss for r in history]
-    val_losses   = [r.val_loss   for r in history]
-    val_accs     = [r.val_accuracy for r in history]
+    val_losses = [r.val_loss for r in history]
+    val_accs = [r.val_accuracy for r in history]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     axes[0].plot(epochs_range, train_losses, label="Train Loss")
-    axes[0].plot(epochs_range, val_losses,   label="Val Loss")
-    axes[0].axvline(x=train_result.best_epoch, color="green", linestyle="--",
-                    alpha=0.7, label=f"Best epoch {train_result.best_epoch}")
+    axes[0].plot(epochs_range, val_losses, label="Val Loss")
+    axes[0].axvline(
+        x=train_result.best_epoch,
+        color="green",
+        linestyle="--",
+        alpha=0.7,
+        label=f"Best epoch {train_result.best_epoch}",
+    )
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
     axes[0].set_title(f"{tag} – Loss")
@@ -136,8 +134,13 @@ def save_fold_plots(
     axes[0].grid(True, alpha=0.3)
 
     axes[1].plot(epochs_range, val_accs, label="Val Accuracy", color="orange")
-    axes[1].axvline(x=train_result.best_epoch, color="green", linestyle="--",
-                    alpha=0.7, label=f"Best: {train_result.best_val_accuracy:.1f}%")
+    axes[1].axvline(
+        x=train_result.best_epoch,
+        color="green",
+        linestyle="--",
+        alpha=0.7,
+        label=f"Best: {train_result.best_val_accuracy:.1f}%",
+    )
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
     axes[1].set_title(f"{tag} – Val Accuracy")
@@ -151,8 +154,15 @@ def save_fold_plots(
     # ── Confusion matrix ─────────────────────────────────────────────────
     cm = confusion_matrix(y_true, y_pred)
     fig2, ax2 = plt.subplots(figsize=(4, 3))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=["Left", "Right"], yticklabels=["Left", "Right"], ax=ax2)
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=["Left", "Right"],
+        yticklabels=["Left", "Right"],
+        ax=ax2,
+    )
     ax2.set_title(f"{tag} – Confusion Matrix")
     ax2.set_xlabel("Predicted")
     ax2.set_ylabel("True")
@@ -163,14 +173,14 @@ def save_fold_plots(
 
 def main() -> None:
     args = parse_args()
-    run_dir  = Path(args.run_dir)
+    run_dir = Path(args.run_dir)
     backbone = args.backbone
-    bshort   = _BACKBONE_SHORT.get(backbone, backbone.replace("/", "_"))
+    bshort = _BACKBONE_SHORT.get(backbone, backbone.replace("/", "_"))
 
     log = setup_logging(run_dir, f"stage_04_baseline_c_{bshort}.log")
     log.info("Backbone: %s  (short: %s)", backbone, bshort)
 
-    out_path  = run_dir / "results" / f"real_baseline_c_{bshort}.json"
+    out_path = run_dir / "results" / f"real_baseline_c_{bshort}.json"
     plots_dir = run_dir / "plots" / f"stage_04_{bshort}"
 
     if out_path.exists():
@@ -189,17 +199,21 @@ def main() -> None:
     from bci.utils.config import ModelConfig, SpectrogramConfig
     from bci.utils.seed import get_device, set_seed
 
-    MODEL_NAME    = f"CWT+{bshort.upper()}"
+    MODEL_NAME = f"CWT+{bshort.upper()}"
     CHANNEL_NAMES = ["C3", "Cz", "C4"]
-    SFREQ         = 128.0
+    SFREQ = 128.0
 
     device = get_device(args.device)
     log.info("Device: %s", device)
     _device = torch.device(device)
 
     spec_config = SpectrogramConfig(
-        wavelet="morl", freq_min=4.0, freq_max=40.0,
-        n_freqs=64, image_size=(224, 224), channel_mode="rgb_c3_cz_c4",
+        wavelet="morl",
+        freq_min=4.0,
+        freq_max=40.0,
+        n_freqs=64,
+        image_size=(224, 224),
+        channel_mode="rgb_c3_cz_c4",
     )
     transform = CWTSpectrogramTransform(spec_config)
 
@@ -209,6 +223,7 @@ def main() -> None:
 
     if args.data == "synthetic":
         from bci.training.cross_validation import make_synthetic_subject_data
+
         log.info("Using synthetic data (smoke-test mode).")
         subject_data = make_synthetic_subject_data(n_subjects=3, seed=args.seed)
     else:
@@ -231,7 +246,7 @@ def main() -> None:
             set_seed(args.seed + fold_counter)
 
             imgs_train = epochs_to_imgs(X[train_idx])
-            imgs_test  = epochs_to_imgs(X[test_idx])
+            imgs_test = epochs_to_imgs(X[test_idx])
             train_ds = TensorDataset(
                 torch.tensor(imgs_train),
                 torch.tensor(y[train_idx], dtype=torch.long),
@@ -240,12 +255,15 @@ def main() -> None:
                 torch.tensor(imgs_test),
                 torch.tensor(np.zeros(len(test_idx), dtype=np.int64), dtype=torch.long),
             )
-            test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2,
-                                     shuffle=False, num_workers=0)
+            test_loader = DataLoader(
+                test_ds, batch_size=args.batch_size * 2, shuffle=False, num_workers=0
+            )
 
             model_config = ModelConfig(
-                vit_model_name=backbone, vit_pretrained=True,
-                vit_drop_rate=0.1, n_classes=2,
+                vit_model_name=backbone,
+                vit_pretrained=True,
+                vit_drop_rate=0.1,
+                n_classes=2,
             )
             model = ViTBranch(config=model_config, as_feature_extractor=False)
             model.freeze_backbone(unfreeze_last_n_blocks=2)
@@ -255,28 +273,46 @@ def main() -> None:
                 return _m(imgs.to(_device)), labels.to(_device)
 
             trainer = Trainer(
-                model=model, device=device,
-                learning_rate=1e-4, weight_decay=1e-4,
-                epochs=args.epochs, batch_size=args.batch_size,
-                warmup_epochs=5, patience=10,
-                label_smoothing=0.1, val_fraction=0.2,
-                seed=args.seed, num_workers=0,
+                model=model,
+                device=device,
+                learning_rate=1e-4,
+                weight_decay=1e-4,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                warmup_epochs=5,
+                patience=10,
+                label_smoothing=0.1,
+                val_fraction=0.2,
+                seed=args.seed,
+                num_workers=0,
             )
             train_result = trainer.fit(
-                train_ds, forward_fn=fwd,
+                train_ds,
+                forward_fn=fwd,
                 model_tag=f"baseline_c_{bshort}_f{fold_counter}",
             )
             y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
             m = compute_metrics(y[test_idx], y_pred, y_prob)
 
             fr = FoldResult(
-                fold=fold_counter, subject=sid,
-                accuracy=m["accuracy"], kappa=m["kappa"], f1_macro=m["f1_macro"],
-                n_train=len(train_idx), n_test=len(test_idx),
-                y_true=y[test_idx], y_pred=y_pred, y_prob=y_prob,
+                fold=fold_counter,
+                subject=sid,
+                accuracy=m["accuracy"],
+                kappa=m["kappa"],
+                f1_macro=m["f1_macro"],
+                n_train=len(train_idx),
+                n_test=len(test_idx),
+                y_true=y[test_idx],
+                y_pred=y_pred,
+                y_prob=y_prob,
             )
-            log.info("  Fold %d [S%02d]: acc=%.2f%%  kappa=%.3f",
-                     fold_counter, sid, fr.accuracy, fr.kappa)
+            log.info(
+                "  Fold %d [S%02d]: acc=%.2f%%  kappa=%.3f",
+                fold_counter,
+                sid,
+                fr.accuracy,
+                fr.kappa,
+            )
             all_folds.append(fr)
 
             # Save per-fold plots
@@ -290,19 +326,19 @@ def main() -> None:
 
     elapsed = time.time() - t0
     result = CVResult(strategy="within_subject", model_name=MODEL_NAME, folds=all_folds)
-    log.info("Done in %.1fs: %.2f%% ± %.2f%%",
-             elapsed, result.mean_accuracy, result.std_accuracy)
+    log.info("Done in %.1fs: %.2f%% ± %.2f%%", elapsed, result.mean_accuracy, result.std_accuracy)
 
     # ── Per-subject summary plot ──────────────────────────────────────────
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import seaborn as sns
 
         per_subj = result.per_subject_accuracy
-        sids   = sorted(per_subj.keys())
-        accs   = [per_subj[s] for s in sids]
+        sids = sorted(per_subj.keys())
+        accs = [per_subj[s] for s in sids]
         mean_a = sum(accs) / len(accs)
 
         fig, ax = plt.subplots(figsize=(10, 5))
@@ -310,8 +346,13 @@ def main() -> None:
         bars = ax.bar([f"S{s}" for s in sids], accs, color=colors)
         ax.axhline(y=mean_a, color="red", linestyle="--", label=f"Mean: {mean_a:.1f}%")
         for bar, acc in zip(bars, accs):
-            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height() + 0.5,
-                    f"{acc:.1f}", ha="center", fontsize=9)
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height() + 0.5,
+                f"{acc:.1f}",
+                ha="center",
+                fontsize=9,
+            )
         ax.set_xlabel("Subject")
         ax.set_ylabel("Accuracy (%)")
         ax.set_title(f"Stage 4 – {MODEL_NAME} per-subject accuracy")
@@ -327,15 +368,15 @@ def main() -> None:
         log.warning("Per-subject plot failed: %s", e)
 
     results = {
-        "model":   MODEL_NAME,
+        "model": MODEL_NAME,
         "backbone": backbone,
         "within_subject": {
             "mean_accuracy": result.mean_accuracy,
-            "std_accuracy":  result.std_accuracy,
-            "mean_kappa":    result.mean_kappa,
-            "mean_f1":       result.mean_f1,
-            "n_folds":       len(all_folds),
-            "per_subject":   result.per_subject_accuracy,
+            "std_accuracy": result.std_accuracy,
+            "mean_kappa": result.mean_kappa,
+            "mean_f1": result.mean_f1,
+            "n_folds": len(all_folds),
+            "per_subject": result.per_subject_accuracy,
         },
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)

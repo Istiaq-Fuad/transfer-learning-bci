@@ -18,6 +18,19 @@ DATA_DIR = PROJECT_ROOT / "data"
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
+# ---------------------------------------------------------------------------
+# Filter bank sub-bands (mu + beta, 8–32 Hz in 4 Hz steps)
+# Used by FBCSPFeatureExtractor and FBRiemannianFeatureExtractor.
+# ---------------------------------------------------------------------------
+FILTER_BANK_BANDS: list[tuple[float, float]] = [
+    (8.0, 12.0),  # mu / lower-alpha
+    (12.0, 16.0),  # lower-beta
+    (16.0, 20.0),  # mid-beta
+    (20.0, 24.0),  # mid-beta
+    (24.0, 28.0),  # upper-beta
+    (28.0, 32.0),  # upper-beta
+]
+
 
 @dataclass
 class DatasetConfig:
@@ -30,9 +43,25 @@ class DatasetConfig:
     # Channel selection: motor cortex channels
     channels: list[str] = field(
         default_factory=lambda: [
-            "FC5", "FC3", "FC1", "FC2", "FC4", "FC6",
-            "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
-            "CP5", "CP3", "CP1", "CPz", "CP2", "CP4",
+            "FC5",
+            "FC3",
+            "FC1",
+            "FC2",
+            "FC4",
+            "FC6",
+            "C5",
+            "C3",
+            "C1",
+            "Cz",
+            "C2",
+            "C4",
+            "C6",
+            "CP5",
+            "CP3",
+            "CP1",
+            "CPz",
+            "CP2",
+            "CP4",
         ]
     )
 
@@ -44,21 +73,35 @@ class PreprocessingConfig:
     # Filtering
     l_freq: float = 4.0
     h_freq: float = 40.0
-    notch_freq: float | None = 50.0
 
-    # ICA
-    apply_ica: bool = True
-    n_ica_components: int | None = None  # None = use all channels
+    # Notch filter
+    apply_notch: bool = True
+    notch_freq: float = 50.0
+
+    # Trial rejection (peak-to-peak amplitude threshold)
+    apply_trial_rejection: bool = True
+    rejection_threshold_uv: float = 100.0  # μV
+
+    # Current Source Density (surface Laplacian)
+    apply_csd: bool = False  # off by default; requires electrode positions
+
+    # Euclidean alignment (re-center covariance per subject)
+    apply_euclidean_alignment: bool = True
+
+    # Time-window crop (applied after MOABB epoching)
+    tmin_crop: float = 0.5  # seconds from cue onset
+    tmax_crop: float = 3.5  # → 3.0 s window, 384 samples at 128 Hz
+
+    # Z-score normalization per channel per trial
+    apply_zscore: bool = True
+
+    # Legacy fields kept for backward compatibility
+    apply_ica: bool = False
+    n_ica_components: int | None = None
     ica_method: str = "fastica"
-
-    # Epoching
     tmin: float = 0.0
     tmax: float = 4.0
-
-    # Resampling
     resample_freq: float | None = 128.0
-
-    # Normalization
     normalize: bool = True
 
 
@@ -72,20 +115,58 @@ class SpectrogramConfig:
     n_freqs: int = 64
     image_size: tuple[int, int] = (224, 224)
     # How to compose channels into an image
-    # "rgb_c3_cz_c4" = map C3→R, Cz→G, C4→B
-    # "mosaic" = tile multiple channel spectrograms
+    # "rgb_c3_cz_c4" = map C3→R, Cz→G, C4→B (legacy 3-channel)
+    # "mosaic"       = tile multiple channel spectrograms into a grid
+    # "multichannel" = produce one image per selected channel (N-channel ViT input)
     channel_mode: str = "rgb_c3_cz_c4"
+    # Channels to use in "multichannel" mode (9 motor-cortex channels)
+    spectrogram_channels: list[str] = field(
+        default_factory=lambda: ["C3", "C1", "Cz", "C2", "C4", "FC3", "FC4", "CP3", "CP4"]
+    )
+    # Normalisation applied after CWT magnitude computation
+    # "per_channel"  = normalise each channel spectrogram independently (legacy)
+    # "joint"        = normalise across all channels jointly (preserves laterality)
+    normalize_mode: str = "joint"
+    # Whether to apply ImageNet mean/std normalisation after [0,1] scaling
+    apply_imagenet_norm: bool = True
     output_dir: str = str(DATA_DIR / "spectrograms")
+
+
+@dataclass
+class AugmentationConfig:
+    """Configuration for EEG and spectrogram data augmentation."""
+
+    # EEG-level augmentation (applied to raw epochs before CWT)
+    apply_gaussian_noise: bool = True
+    gaussian_noise_std: float = 0.05  # fraction of per-channel std
+
+    apply_temporal_crop: bool = True
+    temporal_crop_ratio: float = 0.1  # max fraction of time-points to drop from each end
+
+    apply_channel_dropout: bool = True
+    channel_dropout_prob: float = 0.1  # probability of zeroing each channel
+
+    apply_amplitude_scale: bool = True
+    amplitude_scale_range: tuple[float, float] = (0.8, 1.2)
+
+    # Spectrogram-level augmentation (SpecAugment, applied after CWT)
+    apply_freq_mask: bool = True
+    freq_mask_max_width: int = 8  # max frequency bins to mask
+
+    apply_time_mask: bool = True
+    time_mask_max_width: int = 16  # max time-step columns to mask
 
 
 @dataclass
 class ModelConfig:
     """Configuration for the model architecture."""
 
-    # Image branch (ViT-Tiny by default; EfficientNet-B0 also supported)
+    # Image branch backbone (ViT-Tiny)
     vit_model_name: str = "vit_tiny_patch16_224"
     vit_pretrained: bool = True
     vit_drop_rate: float = 0.1
+    # Number of input channels for the ViT (3 for RGB legacy, 9 for multichannel)
+    in_chans: int = 3
 
     # Math branch
     csp_n_components: int = 6
@@ -93,7 +174,7 @@ class ModelConfig:
     math_drop_rate: float = 0.3
 
     # Fusion
-    fusion_method: str = "attention"  # "attention", "concat", "gated"
+    fusion_method: str = "attention"  # "attention", "gated"
     fused_dim: int = 128
 
     # Classifier head
@@ -144,6 +225,7 @@ class ExperimentConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     spectrogram: SpectrogramConfig = field(default_factory=SpectrogramConfig)
+    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
 

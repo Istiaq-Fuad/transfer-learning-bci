@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # Loaders for each JSON format
 # ---------------------------------------------------------------------------
 
+
 def load_baseline_ab(path: Path) -> dict | None:
     """Load Baseline A or B result (has within_subject + loso keys)."""
     if not path.exists():
@@ -127,6 +128,7 @@ def load_reduced_data(path: Path) -> dict | None:
 # Printing helpers
 # ---------------------------------------------------------------------------
 
+
 def _fmt(val: float | None, pct: bool = True) -> str:
     if val is None:
         return "   N/A  "
@@ -202,7 +204,7 @@ def print_reduced_data_table(data: dict) -> None:
     print("-" * W)
     for frac in fractions:
         frac_str = f"{frac:.2f}"
-        row = f"  {frac*100:>7.0f}%"
+        row = f"  {frac * 100:>7.0f}%"
         for c in conditions:
             d = results.get(c, {}).get(frac_str, {})
             mean = d.get("mean_accuracy", float("nan"))
@@ -216,10 +218,9 @@ def print_reduced_data_table(data: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Phase 4: Compile all experiment results"
-    )
+    parser = argparse.ArgumentParser(description="Phase 4: Compile all experiment results")
     parser.add_argument("--results-dir", default="results", help="Results directory")
     parser.add_argument(
         "--output",
@@ -230,7 +231,7 @@ def main() -> None:
         "--prefix",
         default="real_",
         help="File prefix for real-data results (default: 'real_'). "
-             "Use '' for synthetic-only results.",
+        "Use '' for synthetic-only results.",
     )
     args = parser.parse_args()
 
@@ -250,20 +251,17 @@ def main() -> None:
     if baseline_c:
         baseline_c["model"] = "Baseline C: CWT+ViT-Tiny"
 
-    dual_attn  = load_dual_branch(rd / f"{p}dual_branch_attention.json")
-    dual_concat = load_dual_branch(rd / f"{p}dual_branch_concat.json")
-    dual_gated  = load_dual_branch(rd / f"{p}dual_branch_gated.json")
+    dual_attn = load_dual_branch(rd / f"{p}dual_branch_attention.json")
+    dual_gated = load_dual_branch(rd / f"{p}dual_branch_gated.json")
     # Also check _full suffixes from Phase 2 synthetic runs
     if dual_attn is None:
         dual_attn = load_dual_branch(rd / "dual_branch_attention_full.json")
-    if dual_concat is None:
-        dual_concat = load_dual_branch(rd / "dual_branch_concat_full.json")
     if dual_gated is None:
         dual_gated = load_dual_branch(rd / "dual_branch_gated_full.json")
 
-    ft_scratch   = load_finetune(rd / f"{p}finetune_scratch.json")
-    ft_imagenet  = load_finetune(rd / f"{p}finetune_imagenet.json")
-    ft_transfer  = load_finetune(rd / f"{p}finetune_transfer.json")
+    ft_scratch = load_finetune(rd / f"{p}finetune_scratch.json")
+    ft_imagenet = load_finetune(rd / f"{p}finetune_imagenet.json")
+    ft_transfer = load_finetune(rd / f"{p}finetune_transfer.json")
     # Fallback to synthetic finetune results
     if ft_scratch is None:
         ft_scratch = load_finetune(rd / "finetune_scratch.json")
@@ -285,17 +283,24 @@ def main() -> None:
 
     # --- Build main table rows ---
     rows = []
-    for r in [baseline_a, baseline_b, baseline_c,
-              dual_attn, dual_concat, dual_gated,
-              ft_scratch, ft_imagenet, ft_transfer]:
+    for r in [
+        baseline_a,
+        baseline_b,
+        baseline_c,
+        dual_attn,
+        dual_gated,
+        ft_scratch,
+        ft_imagenet,
+        ft_transfer,
+    ]:
         if r is not None:
             rows.append(r)
 
     if not rows:
         logger.warning(
-            "No result files found in %s (prefix='%s'). "
-            "Run the experiments first.",
-            rd, p,
+            "No result files found in %s (prefix='%s'). Run the experiments first.",
+            rd,
+            p,
         )
         return
 
@@ -320,19 +325,18 @@ def main() -> None:
     # --- Save combined summary ---
     summary = {
         "baselines": {
-            "csp_lda":     baseline_a,
-            "riemannian":  baseline_b,
-            "vit_only":    baseline_c,
+            "csp_lda": baseline_a,
+            "riemannian": baseline_b,
+            "vit_only": baseline_c,
         },
         "dual_branch": {
             "attention": dual_attn,
-            "concat":    dual_concat,
-            "gated":     dual_gated,
+            "gated": dual_gated,
         },
         "transfer_learning": {
-            "scratch":   ft_scratch,
-            "imagenet":  ft_imagenet,
-            "transfer":  ft_transfer,
+            "scratch": ft_scratch,
+            "imagenet": ft_imagenet,
+            "transfer": ft_transfer,
         },
         "reduced_data": reduced,
     }

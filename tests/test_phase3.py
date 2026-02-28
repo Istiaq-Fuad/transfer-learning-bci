@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader, TensorDataset
 # Helpers shared by multiple tests
 # ---------------------------------------------------------------------------
 
+
 def _make_eeg_data(
     n_trials: int = 16,
     n_channels: int = 3,
@@ -43,6 +44,7 @@ def _make_image_dataset(n: int = 12) -> TensorDataset:
 # ---------------------------------------------------------------------------
 # 1. ViT pretraining pipeline
 # ---------------------------------------------------------------------------
+
 
 class TestViTPretraining:
     def test_vit_branch_as_classifier_forward(self):
@@ -126,14 +128,19 @@ class TestViTPretraining:
                 checkpoint_path=ckpt_path,
             )
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-            # Checkpoint is ViTBranch state_dict — should have backbone keys
-            backbone_keys = [k for k in ckpt if k.startswith("backbone.")]
-            assert len(backbone_keys) > 0, "No backbone keys in checkpoint"
+            # Checkpoint is the raw ViT backbone state_dict (saved via
+            # model.backbone.state_dict()), so keys are timm model keys such as
+            # "patch_embed.proj.weight" — NOT prefixed with "backbone.".
+            assert len(ckpt) > 0, "Checkpoint is empty"
+            assert any("patch_embed" in k for k in ckpt), (
+                f"Expected patch_embed keys in checkpoint, got: {list(ckpt.keys())[:5]}"
+            )
 
 
 # ---------------------------------------------------------------------------
 # 2. Transfer learning: checkpoint loading into DualBranchModel
 # ---------------------------------------------------------------------------
+
 
 class TestTransferLearning:
     def _make_checkpoint(self, tmpdir: str) -> Path:
@@ -174,13 +181,11 @@ class TestTransferLearning:
             fusion="attention",
         )
         frozen = sum(
-            p.numel() for p in model.vit_branch.backbone.parameters()
-            if not p.requires_grad
+            p.numel() for p in model.vit_branch.backbone.parameters() if not p.requires_grad
         )
         total_vit = sum(p.numel() for p in model.vit_branch.backbone.parameters())
         # Most ViT params should be frozen (>50%)
-        assert frozen > total_vit * 0.5, \
-            f"Expected >50% frozen, got {frozen}/{total_vit}"
+        assert frozen > total_vit * 0.5, f"Expected >50% frozen, got {frozen}/{total_vit}"
 
     def test_transfer_loads_checkpoint(self):
         """Transfer condition loads checkpoint without errors."""
@@ -235,6 +240,7 @@ class TestTransferLearning:
 # 3. Reduced-data subsampling
 # ---------------------------------------------------------------------------
 
+
 class TestReducedDataSubsampling:
     def test_subsample_respects_fraction(self):
         """StratifiedShuffleSplit gives approximately the right number of samples."""
@@ -248,8 +254,7 @@ class TestReducedDataSubsampling:
             n_keep = max(2, int(n_total * frac))
             sss = StratifiedShuffleSplit(n_splits=1, train_size=n_keep, random_state=0)
             keep_idx, _ = next(sss.split(X, y))
-            assert len(keep_idx) == n_keep, \
-                f"frac={frac}: expected {n_keep}, got {len(keep_idx)}"
+            assert len(keep_idx) == n_keep, f"frac={frac}: expected {n_keep}, got {len(keep_idx)}"
 
     def test_subsample_stays_balanced(self):
         """Stratified subsampling preserves class balance."""
@@ -263,8 +268,7 @@ class TestReducedDataSubsampling:
         sss = StratifiedShuffleSplit(n_splits=1, train_size=n_keep, random_state=0)
         keep_idx, _ = next(sss.split(X, y))
         y_sub = y[keep_idx]
-        assert np.sum(y_sub == 0) == np.sum(y_sub == 1), \
-            "Stratified split should be balanced"
+        assert np.sum(y_sub == 0) == np.sum(y_sub == 1), "Stratified split should be balanced"
 
     def test_fraction_1_uses_all_data(self):
         """At fraction=1.0, all training data is used."""
@@ -288,6 +292,7 @@ class TestReducedDataSubsampling:
 # ---------------------------------------------------------------------------
 # 4. End-to-end: mini pretrain -> finetune
 # ---------------------------------------------------------------------------
+
 
 class TestEndToEndPhase3:
     def test_pretrain_then_transfer_finetune(self):
@@ -337,8 +342,10 @@ class TestEndToEndPhase3:
             result = _train_and_eval_fold(
                 fold_idx=0,
                 subject_id=1,
-                X_train=X[:16], y_train=y[:16],
-                X_test=X[16:],  y_test=y[16:],
+                X_train=X[:16],
+                y_train=y[:16],
+                X_test=X[16:],
+                y_test=y[16:],
                 condition="transfer",
                 checkpoint_path=ckpt_path,
                 builder=builder,
@@ -399,8 +406,10 @@ class TestEndToEndPhase3:
                 ckpt = ckpt_path if condition == "transfer" else None
                 acc = _run_one_trial(
                     condition=condition,
-                    X_train_full=X[:16], y_train_full=y[:16],
-                    X_test=X[16:],       y_test=y[16:],
+                    X_train_full=X[:16],
+                    y_train_full=y[:16],
+                    X_test=X[16:],
+                    y_test=y[16:],
                     fraction=0.5,
                     builder=builder,
                     checkpoint_path=ckpt,
@@ -413,5 +422,4 @@ class TestEndToEndPhase3:
                     unfreeze_last_n=2,
                     seed=0,
                 )
-                assert 0.0 <= acc <= 100.0, \
-                    f"Unexpected accuracy for {condition}: {acc}"
+                assert 0.0 <= acc <= 100.0, f"Unexpected accuracy for {condition}: {acc}"

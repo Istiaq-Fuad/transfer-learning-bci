@@ -1,18 +1,25 @@
 """Baseline B: Riemannian geometry + LDA classification pipeline.
 
 Runs within-subject 5-fold CV and LOSO CV using:
-    - Riemannian tangent space features (Ledoit-Wolf covariance, Riemannian metric)
-    - Linear Discriminant Analysis (LDA) classifier
+    - Riemannian tangent space features (covariance estimation + TangentSpace)
+    - Configurable classifier: LDA (with shrinkage), SVM, MDM, or FgMDM
 
-The Riemannian approach treats EEG covariance matrices as points on an SPD
-manifold and projects them into a Euclidean tangent space for classification.
+Supports two methods via --method:
+    basic  – full-band tangent space (original baseline)
+    fbts   – Filter Bank Tangent Space (per-band covariance + TangentSpace)
+
+Supports Riemannian Alignment (RA) for cross-subject generalisation via
+--align flag (particularly effective for LOSO).
 
 Usage:
     # Synthetic data (no download required)
     uv run python scripts/baseline_b_riemannian.py
 
-    # Real data (requires BCI IV-2a downloaded)
-    uv run python scripts/baseline_b_riemannian.py --data real --data-dir ~/mne_data
+    # Real data — FBTS + MDM classifier
+    uv run python scripts/baseline_b_riemannian.py --data real --method fbts --classifier mdm
+
+    # Real data — basic + Riemannian alignment + SVM
+    uv run python scripts/baseline_b_riemannian.py --data real --align --classifier svm
 """
 
 from __future__ import annotations
@@ -24,9 +31,12 @@ import time
 from pathlib import Path
 
 import numpy as np
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
-from bci.features.riemannian import RiemannianFeatureExtractor
+from bci.features.riemannian import (
+    FBRiemannianFeatureExtractor,
+    RiemannianFeatureExtractor,
+    riemannian_recenter,
+)
 from bci.training.cross_validation import (
     CVResult,
     loso_cv,
@@ -42,25 +52,94 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "Riemannian+LDA"
 
 
-def make_predict_fn(estimator: str = "lwf", metric: str = "riemann"):
-    """Return a predict_fn for Riemannian tangent space + LDA.
+def _make_classifier(classifier: str, sfreq: float):
+    """Instantiate the requested classifier."""
+    if classifier == "lda":
+        from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
-    Each fold gets a fresh pipeline to avoid data leakage.
+        return LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+    if classifier == "svm":
+        from sklearn.svm import SVC
+
+        return SVC(kernel="rbf", probability=True, C=1.0, gamma="scale")
+    if classifier == "mdm":
+        from pyriemann.classification import MDM
+
+        return MDM(metric="riemann")
+    if classifier == "fgmdm":
+        from pyriemann.classification import FgMDM
+
+        return FgMDM(metric="riemann", tsupdate=False)
+    raise ValueError(f"Unknown classifier: {classifier!r}. Choose lda | svm | mdm | fgmdm")
+
+
+def make_predict_fn(
+    method: str = "basic",
+    estimator: str = "oas",
+    metric: str = "riemann",
+    classifier: str = "lda",
+    sfreq: float = 128.0,
+    align: bool = False,
+):
+    """Return a predict_fn for Riemannian + classifier.
+
+    Args:
+        method: "basic" | "fbts" (filter bank tangent space).
+        estimator: Covariance estimator — "oas" | "lwf" | "scm".
+        metric: Riemannian metric — "riemann" | "logeuclid" | "euclid".
+        classifier: "lda" | "svm" | "mdm" | "fgmdm".
+        sfreq: Sampling frequency in Hz.
+        align: If True, apply Riemannian recentering before feature extraction.
+
+    Note: MDM and FgMDM work directly on covariance matrices and bypass
+    tangent space projection. They use pyriemann's own internal pipeline.
     """
+    use_mdm = classifier in ("mdm", "fgmdm")
+
     def predict_fn(
         X_train: np.ndarray,
         y_train: np.ndarray,
         X_test: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        riemann = RiemannianFeatureExtractor(estimator=estimator, metric=metric)
-        lda = LinearDiscriminantAnalysis()
+        X_tr, X_te = X_train, X_test
 
-        features_train = riemann.fit_transform(X_train, y_train)
-        features_test = riemann.transform(X_test)
+        if align:
+            X_tr, X_te = riemannian_recenter(X_tr, X_te, estimator=estimator)
 
-        lda.fit(features_train, y_train)
-        y_pred = lda.predict(features_test)
-        y_prob = lda.predict_proba(features_test)
+        if use_mdm:
+            # MDM/FgMDM classify directly from covariance matrices
+            from pyriemann.estimation import Covariances
+
+            cov_est = Covariances(estimator=estimator)
+            covs_train = cov_est.fit_transform(X_tr.astype(np.float64))
+            covs_test = cov_est.transform(X_te.astype(np.float64))
+
+            clf = _make_classifier(classifier, sfreq)
+            clf.fit(covs_train, y_train)
+            y_pred = clf.predict(covs_test)
+            y_prob = clf.predict_proba(covs_test)
+            return y_pred, y_prob
+
+        # Tangent-space path (basic or fbts)
+        if method == "fbts":
+            extractor: FBRiemannianFeatureExtractor | RiemannianFeatureExtractor = (
+                FBRiemannianFeatureExtractor(
+                    estimator=estimator,
+                    metric=metric,
+                    sfreq=sfreq,
+                )
+            )
+        else:
+            extractor = RiemannianFeatureExtractor(estimator=estimator, metric=metric)
+
+        clf = _make_classifier(classifier, sfreq)
+
+        features_train = extractor.fit_transform(X_tr, y_train)
+        features_test = extractor.transform(X_te)
+
+        clf.fit(features_train, y_train)
+        y_pred = clf.predict(features_test)
+        y_prob = clf.predict_proba(features_test)
 
         return y_pred, y_prob
 
@@ -140,7 +219,7 @@ def load_real_data(data_dir: str) -> dict[int, tuple[np.ndarray, np.ndarray]]:
 
     logger.info("Loading BCI IV-2a dataset from %s ...", data_dir)
     dataset = BNCI2014_001()
-    paradigm = LeftRightImagery()
+    paradigm = LeftRightImagery(fmin=8.0, fmax=32.0, resample=128.0)
 
     subject_data: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for subject_id in dataset.subject_list:
@@ -167,11 +246,18 @@ def main() -> None:
     )
     parser.add_argument("--data-dir", type=str, default="~/mne_data", help="MNE data dir")
     parser.add_argument(
+        "--method",
+        type=str,
+        default="basic",
+        choices=["basic", "fbts"],
+        help="Feature extraction method: basic (full-band TS) or fbts (filter bank TS). Default: basic",
+    )
+    parser.add_argument(
         "--estimator",
         type=str,
-        default="lwf",
+        default="oas",
         choices=["lwf", "scm", "oas"],
-        help="Covariance estimator (default: lwf)",
+        help="Covariance estimator (default: oas)",
     )
     parser.add_argument(
         "--metric",
@@ -179,6 +265,19 @@ def main() -> None:
         default="riemann",
         choices=["riemann", "logeuclid", "euclid"],
         help="Riemannian metric (default: riemann)",
+    )
+    parser.add_argument(
+        "--classifier",
+        type=str,
+        default="lda",
+        choices=["lda", "svm", "mdm", "fgmdm"],
+        help="Classifier to use (default: lda)",
+    )
+    parser.add_argument(
+        "--align",
+        action="store_true",
+        default=False,
+        help="Apply Riemannian Alignment before feature extraction",
     )
     parser.add_argument("--n-folds", type=int, default=5, help="CV folds")
     parser.add_argument("--n-subjects", type=int, default=9, help="Subjects (synthetic only)")
@@ -195,8 +294,11 @@ def main() -> None:
     logger.info("=" * 50)
     logger.info("Baseline B: Riemannian + LDA")
     logger.info("  Data:       %s", args.data)
+    logger.info("  Method:     %s", args.method)
     logger.info("  Estimator:  %s", args.estimator)
     logger.info("  Metric:     %s", args.metric)
+    logger.info("  Classifier: %s", args.classifier)
+    logger.info("  Align:      %s", args.align)
     logger.info("  CV folds:   %d", args.n_folds)
     logger.info("  Seed:       %d", args.seed)
     logger.info("=" * 50)
@@ -212,7 +314,13 @@ def main() -> None:
         logger.error("No data loaded. Exiting.")
         return
 
-    predict_fn = make_predict_fn(estimator=args.estimator, metric=args.metric)
+    predict_fn = make_predict_fn(
+        method=args.method,
+        estimator=args.estimator,
+        metric=args.metric,
+        classifier=args.classifier,
+        align=args.align,
+    )
 
     # --- Within-subject CV ---
     logger.info("\nRunning within-subject %d-fold CV...", args.n_folds)
