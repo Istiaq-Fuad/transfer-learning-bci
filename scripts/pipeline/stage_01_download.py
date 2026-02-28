@@ -1,15 +1,32 @@
-"""Stage 1 – Download / verify datasets.
+"""Stage 01 – Download datasets and build .npz cache.
 
-Downloads BCI Competition IV-2a and PhysioNet MMIDB via MOABB (if not already
-present) and prints a summary of available subjects.  Both datasets are loaded
-with the 8–32 Hz motor-imagery band and 128 Hz resampling, consistent with all
-downstream pipeline stages.  All 109 PhysioNet subjects are verified so the
-full corpus is cached before pretraining (Stage 7).
+Downloads BCI Competition IV-2a and PhysioNet MMIDB via MOABB, epochs
+all subjects with an 8–32 Hz bandpass filter, and saves per-subject .npz
+files.  Then generates 9-channel multichannel CWT spectrograms (224×224)
+and computes per-channel mean/std statistics from the BCI IV-2a training
+subjects.
+
+All later pipeline stages load data exclusively from this cache — no further
+MOABB calls are required once this stage has run.
+
+Output layout::
+
+    data/processed/bci_iv2a/subject_01.npz          # X, y, channel_names, sfreq
+    data/processed/bci_iv2a/subject_01_spectrograms.npz
+    ...
+    data/processed/bci_iv2a/spectrogram_stats.npz   # mean, std per channel
+    data/processed/physionet/subject_001.npz
+    data/processed/physionet/subject_001_spectrograms.npz
+    ...
+    data/processed/physionet/spectrogram_stats.npz
 
 Usage::
 
     uv run python scripts/pipeline/stage_01_download.py
-    uv run python scripts/pipeline/stage_01_download.py --data-dir ~/mne_data
+    uv run python scripts/pipeline/stage_01_download.py \\
+        --processed-dir data/processed --mne-data-dir ~/mne_data
+    # Force regenerate even if cache exists:
+    uv run python scripts/pipeline/stage_01_download.py --force
 """
 
 from __future__ import annotations
@@ -22,12 +39,38 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 1: Download / verify BCI IV-2a and PhysioNet datasets.",
+        description="Stage 01: Download datasets and build .npz epoch + spectrogram cache.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--data-dir", default="~/mne_data", help="MNE data directory")
     p.add_argument(
-        "--run-dir", default=None, help="Run directory for logs (optional; created if absent)"
+        "--processed-dir",
+        default=None,
+        help="Root directory for processed .npz cache (default: data/processed/)",
+    )
+    p.add_argument(
+        "--mne-data-dir",
+        default="~/mne_data",
+        help="MNE data directory for MOABB downloads",
+    )
+    p.add_argument(
+        "--run-dir",
+        default=None,
+        help="Optional run directory for log file",
+    )
+    p.add_argument(
+        "--skip-physionet",
+        action="store_true",
+        help="Skip PhysioNet download (faster for testing)",
+    )
+    p.add_argument(
+        "--skip-spectrograms",
+        action="store_true",
+        help="Skip spectrogram generation (only save epoch .npz files)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate existing cache files",
     )
     return p.parse_args()
 
@@ -52,53 +95,86 @@ def main() -> None:
     log = setup_logging(run_dir)
 
     import mne
-    import numpy as np
-    from moabb.datasets import BNCI2014_001, PhysionetMI
-    from moabb.paradigms import LeftRightImagery
 
     mne.set_log_level("ERROR")
+    if args.mne_data_dir:
+        mne.set_config("MNE_DATA", str(Path(args.mne_data_dir).expanduser()))
 
-    # ── BCI IV-2a ─────────────────────────────────────────────────────────
-    log.info("Checking BCI Competition IV-2a...  [filter: 8–32 Hz]")
+    processed_dir = Path(args.processed_dir) if args.processed_dir else None
+
+    from bci.data.download import (
+        compute_spectrogram_stats,
+        process_and_cache,
+        process_and_cache_spectrograms,
+    )
+    from bci.utils.config import SpectrogramConfig
+
+    spec_cfg = SpectrogramConfig()  # multichannel, 8–32 Hz, 9 channels, 224×224
+
+    # ── BCI Competition IV-2a ─────────────────────────────────────────────
+    log.info("=== BCI Competition IV-2a (9 subjects) ===")
     try:
-        dataset = BNCI2014_001()
-        paradigm = LeftRightImagery(fmin=8.0, fmax=32.0, resample=128.0)
-        ok_subjects = []
-        for sid in dataset.subject_list:
-            try:
-                X, y_labels, _ = paradigm.get_data(dataset=dataset, subjects=[sid])
-                log.info("  Subject %2d: X=%s", sid, X.shape)
-                ok_subjects.append(sid)
-            except Exception as e:
-                log.warning("  Subject %d: FAILED – %s", sid, e)
-        log.info("BCI IV-2a: %d/%d subjects OK.", len(ok_subjects), len(dataset.subject_list))
-    except Exception as e:
-        log.error("BCI IV-2a download/load failed: %s", e)
+        process_and_cache(
+            "bci_iv2a",
+            data_dir=processed_dir,
+            fmin=8.0,
+            fmax=32.0,
+            force=args.force,
+        )
+    except Exception:
+        log.exception("BCI IV-2a epoch caching failed")
         sys.exit(1)
+
+    if not args.skip_spectrograms:
+        log.info("Generating BCI IV-2a spectrograms...")
+        try:
+            process_and_cache_spectrograms(
+                "bci_iv2a",
+                data_dir=processed_dir,
+                spec_config=spec_cfg,
+                force=args.force,
+            )
+            log.info("Computing BCI IV-2a spectrogram stats...")
+            mean, std = compute_spectrogram_stats("bci_iv2a", data_dir=processed_dir)
+            log.info("BCI IV-2a stats: mean=%s  std=%s", mean.tolist(), std.tolist())
+        except Exception:
+            log.exception("BCI IV-2a spectrogram generation failed")
+            sys.exit(1)
 
     # ── PhysioNet MMIDB ───────────────────────────────────────────────────
-    log.info("Checking PhysioNet MMIDB (all subjects)...  [filter: 8–32 Hz]")
-    try:
-        pdata = PhysionetMI()
-        pparadigm = LeftRightImagery(fmin=8.0, fmax=32.0, resample=128.0)
-        ok_subjects_p: list[int] = []
-        for sid in pdata.subject_list:
-            try:
-                X, y_labels, _ = pparadigm.get_data(dataset=pdata, subjects=[sid])
-                log.info("  Subject %3d: X=%s", sid, X.shape)
-                ok_subjects_p.append(sid)
-            except Exception as e:
-                log.warning("  Subject %d: FAILED – %s", sid, e)
-        log.info(
-            "PhysioNet MMIDB: %d/%d subjects OK.",
-            len(ok_subjects_p),
-            len(pdata.subject_list),
-        )
-    except Exception as e:
-        log.error("PhysioNet download/load failed: %s", e)
-        sys.exit(1)
+    if args.skip_physionet:
+        log.info("Skipping PhysioNet (--skip-physionet)")
+    else:
+        log.info("=== PhysioNet MMIDB (up to 109 subjects) ===")
+        try:
+            process_and_cache(
+                "physionet",
+                data_dir=processed_dir,
+                fmin=8.0,
+                fmax=32.0,
+                force=args.force,
+            )
+        except Exception:
+            log.exception("PhysioNet epoch caching failed")
+            sys.exit(1)
 
-    log.info("Stage 1 complete – all datasets downloaded and verified.")
+        if not args.skip_spectrograms:
+            log.info("Generating PhysioNet spectrograms...")
+            try:
+                process_and_cache_spectrograms(
+                    "physionet",
+                    data_dir=processed_dir,
+                    spec_config=spec_cfg,
+                    force=args.force,
+                )
+                log.info("Computing PhysioNet spectrogram stats...")
+                mean_p, std_p = compute_spectrogram_stats("physionet", data_dir=processed_dir)
+                log.info("PhysioNet stats: mean=%s  std=%s", mean_p.tolist(), std_p.tolist())
+            except Exception:
+                log.exception("PhysioNet spectrogram generation failed")
+                sys.exit(1)
+
+    log.info("Stage 01 complete.")
 
 
 if __name__ == "__main__":

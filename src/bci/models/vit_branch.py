@@ -26,7 +26,7 @@ import timm
 import torch
 import torch.nn as nn
 
-from bci.utils.config import ModelConfig
+from bci.utils.config import DEFAULT_CLS_HIDDEN, DEFAULT_FUSED_DIM, ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,9 @@ BACKBONE_SHORT: str = "vit"
 #: ViT-Tiny backbone output dimension (before fusion)
 FEATURE_DIM: int = 192
 
-#: Default fused feature dimension after AttentionFusion
-DEFAULT_FUSED_DIM: int = 128
-
-#: Default ClassifierHead hidden layer dimension
-DEFAULT_CLS_HIDDEN: int = 64
+# DEFAULT_FUSED_DIM and DEFAULT_CLS_HIDDEN are defined in bci.utils.config and
+# re-exported here for backward compatibility with pipeline scripts.
+# New code should import directly from bci.utils.config.
 
 #: The timm model name this module is designed for
 MODEL_NAME: str = "vit_tiny_patch16_224"

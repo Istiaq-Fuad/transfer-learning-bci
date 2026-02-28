@@ -28,8 +28,8 @@ dataset:
     - CP4
 
 preprocessing:
-  l_freq: 4.0
-  h_freq: 40.0
+  l_freq: 8.0
+  h_freq: 32.0
   notch_freq: 60.0  # US dataset uses 60Hz power line
   apply_ica: true
   ica_method: "fastica"

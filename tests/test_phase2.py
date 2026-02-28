@@ -60,7 +60,7 @@ class TestDualBranchFoldBuilder:
         spec_cfg = SpectrogramConfig(
             n_freqs=8,
             image_size=(224, 224),
-            channel_mode="rgb_c3_cz_c4",
+            channel_mode="multichannel",
         )
         return DualBranchFoldBuilder(
             csp_n_components=4,
@@ -100,7 +100,7 @@ class TestDualBranchFoldBuilder:
         train_ds, test_ds, math_dim = builder.build_fold(X_train, y_train, X_test, y_test)
 
         img, feat, lbl = train_ds[0]
-        assert img.shape == (3, 224, 224), f"Expected (3,224,224), got {img.shape}"
+        assert img.shape == (9, 224, 224), f"Expected (9,224,224), got {img.shape}"
         assert feat.shape == (math_dim,), f"Expected ({math_dim},), got {feat.shape}"
         assert lbl.shape == ()
 
@@ -126,8 +126,7 @@ class TestDualBranchFoldBuilder:
         train_ds, _, _ = builder.build_fold(X_train, y_train, X_test, y_test)
         img, _, _ = train_ds[0]
         assert img.dtype == torch.float32
-        # After ImageNet normalisation values are in roughly [-2.2, +2.7].
-        # Check they are finite and not still in raw [0,255] uint8 range.
+        # Multichannel spectrograms are float32 in [0,1]; check finite and in range.
         assert torch.isfinite(img).all(), "Image tensor contains NaN/Inf"
         assert float(img.max()) < 10.0, "Image values look un-normalised (too large)"
 
@@ -213,7 +212,7 @@ class TestDualBranchModel:
 
     def test_forward_pass_shape(self):
         model = self._make_model()
-        images = torch.randn(2, 3, 224, 224)
+        images = torch.randn(2, 9, 224, 224)
         features = torch.randn(2, 16)
         with torch.no_grad():
             logits = model(images, features)
@@ -222,12 +221,12 @@ class TestDualBranchModel:
     def test_all_fusion_methods_run(self):
         for fusion in ["attention", "concat", "gated"]:
             model = self._make_model(fusion=fusion)
-            logits = model(torch.randn(2, 3, 224, 224), torch.randn(2, 16))
+            logits = model(torch.randn(2, 9, 224, 224), torch.randn(2, 16))
             assert logits.shape == (2, 2), f"Failed for fusion={fusion}"
 
     def test_get_branch_features_shapes(self):
         model = self._make_model()
-        images = torch.randn(2, 3, 224, 224)
+        images = torch.randn(2, 9, 224, 224)
         features = torch.randn(2, 16)
         with torch.no_grad():
             vit_f, math_f, fused_f = model.get_branch_features(images, features)

@@ -21,7 +21,6 @@ References:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 import numpy as np
 from mne.decoding import CSP
@@ -31,20 +30,9 @@ from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.feature_selection import SelectKBest, mutual_info_classif
 
-if TYPE_CHECKING:
-    pass
+from bci.utils.config import FILTER_BANK_BANDS
 
 logger = logging.getLogger(__name__)
-
-# Default sub-bands for Filter Bank CSP (mu + beta rhythm decomposition, 8–32 Hz)
-_DEFAULT_BANDS: list[tuple[float, float]] = [
-    (8.0, 12.0),  # mu / lower-alpha
-    (12.0, 16.0),  # lower-beta
-    (16.0, 20.0),  # mid-beta
-    (20.0, 24.0),  # mid-beta
-    (24.0, 28.0),  # upper-beta
-    (28.0, 32.0),  # upper-beta
-]
 
 # Default time windows for Ensemble CSP (seconds, relative to epoch start)
 _DEFAULT_WINDOWS: list[tuple[float, float]] = [
@@ -183,7 +171,7 @@ class FBCSPFeatureExtractor(BaseEstimator, TransformerMixin):
 
     Args:
         bands: List of (l_freq, h_freq) tuples defining the sub-bands.
-            Default: 6 bands covering 8–32 Hz in 4 Hz steps.
+            Default: 6 bands covering 8–32 Hz in 4 Hz steps (from FILTER_BANK_BANDS).
         sfreq: Sampling frequency of the input data in Hz. Default: 128.0.
         n_components: CSP components per band. Default: 4.
         reg: Covariance regularization for each per-band CSP. Default: "ledoit_wolf".
@@ -209,7 +197,7 @@ class FBCSPFeatureExtractor(BaseEstimator, TransformerMixin):
         reg: str | float | None = "ledoit_wolf",
         k_best: int | None = 12,
     ) -> None:
-        self.bands = bands if bands is not None else list(_DEFAULT_BANDS)
+        self.bands = bands if bands is not None else list(FILTER_BANK_BANDS)
         self.sfreq = sfreq
         self.n_components = n_components
         self.reg = reg
@@ -327,7 +315,7 @@ class EnsembleCSPClassifier(BaseEstimator, ClassifierMixin):
             windows covering 0–3 s.
         sfreq: Sampling frequency in Hz. Default: 128.0.
         fbcsp_bands: Sub-bands forwarded to FBCSPFeatureExtractor. Default: 6
-            bands from 8–32 Hz.
+            bands from 8–32 Hz (FILTER_BANK_BANDS).
         n_components: CSP components per band. Default: 4.
         k_best: Feature selector k forwarded to FBCSPFeatureExtractor.
         lda_shrinkage: Shrinkage for LDA. "auto" uses Ledoit-Wolf analytic

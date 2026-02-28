@@ -17,7 +17,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Training result container
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EpochResult:
     epoch: int
@@ -47,6 +48,7 @@ class EpochResult:
 @dataclass
 class TrainResult:
     """Outcome of a full training run."""
+
     best_val_accuracy: float
     best_epoch: int
     final_epoch: int
@@ -64,12 +66,14 @@ class TrainResult:
 # Learning-rate schedule helpers
 # ---------------------------------------------------------------------------
 
+
 def _cosine_with_warmup_schedule(
     optimizer: torch.optim.Optimizer,
     warmup_epochs: int,
     total_epochs: int,
 ) -> LambdaLR:
     """Linear warmup then cosine annealing LR schedule."""
+
     def lr_lambda(epoch: int) -> float:
         if epoch < warmup_epochs:
             return float(epoch + 1) / max(warmup_epochs, 1)
@@ -82,6 +86,7 @@ def _cosine_with_warmup_schedule(
 # ---------------------------------------------------------------------------
 # Core Trainer class
 # ---------------------------------------------------------------------------
+
 
 class Trainer:
     """Generic PyTorch trainer.
@@ -145,17 +150,24 @@ class Trainer:
             # higher rate for everything else.
             vit_branch = self.model.vit_branch  # type: ignore[attr-defined]
             backbone_param_ids = {id(p) for p in vit_branch.get_backbone_params()}
-            backbone_params = [p for p in self.model.parameters()
-                               if id(p) in backbone_param_ids and p.requires_grad]
-            other_params    = [p for p in self.model.parameters()
-                               if id(p) not in backbone_param_ids and p.requires_grad]
+            backbone_params = [
+                p
+                for p in self.model.parameters()
+                if id(p) in backbone_param_ids and p.requires_grad
+            ]
+            other_params = [
+                p
+                for p in self.model.parameters()
+                if id(p) not in backbone_param_ids and p.requires_grad
+            ]
             param_groups = [
                 {"params": backbone_params, "lr": self.lr * self.backbone_lr_scale},
-                {"params": other_params,    "lr": self.lr},
+                {"params": other_params, "lr": self.lr},
             ]
             logger.info(
                 "Differential LR: backbone=%.2e, rest=%.2e",
-                self.lr * self.backbone_lr_scale, self.lr,
+                self.lr * self.backbone_lr_scale,
+                self.lr,
             )
         else:
             param_groups = [{"params": list(self.model.parameters()), "lr": self.lr}]
@@ -266,6 +278,7 @@ class Trainer:
             TrainResult with training history.
         """
         if forward_fn is None:
+
             def forward_fn(batch):
                 inputs, labels = batch
                 inputs = inputs.to(self.device)
@@ -282,9 +295,12 @@ class Trainer:
         history: list[EpochResult] = []
 
         logger.info(
-            "Training %s | device=%s | epochs=%d | lr=%.2e | batch=%d | "
-            "train=%d val=%d",
-            model_tag, self.device, self.epochs, self.lr, self.batch_size,
+            "Training %s | device=%s | epochs=%d | lr=%.2e | batch=%d | train=%d val=%d",
+            model_tag,
+            self.device,
+            self.epochs,
+            self.lr,
+            self.batch_size,
             len(train_loader.dataset),  # type: ignore[arg-type]
             len(val_loader.dataset),  # type: ignore[arg-type]
         )
@@ -310,8 +326,13 @@ class Trainer:
                 logger.info(
                     "  [%03d/%03d] train_loss=%.4f  val_loss=%.4f  "
                     "val_acc=%.2f%%  kappa=%.3f  lr=%.2e",
-                    epoch, self.epochs,
-                    train_loss, val_loss, val_acc, val_kappa, current_lr,
+                    epoch,
+                    self.epochs,
+                    train_loss,
+                    val_loss,
+                    val_acc,
+                    val_kappa,
+                    current_lr,
                 )
 
             # Early stopping + checkpointing
@@ -330,14 +351,18 @@ class Trainer:
                 if patience_counter >= self.patience:
                     logger.info(
                         "  Early stopping at epoch %d (best=%.2f%% @ epoch %d)",
-                        epoch, best_val_acc, best_epoch,
+                        epoch,
+                        best_val_acc,
+                        best_epoch,
                     )
                     break
 
         elapsed = time.time() - t_start
         logger.info(
             "Training done in %.1fs | best_val_acc=%.2f%% @ epoch %d",
-            elapsed, best_val_acc, best_epoch,
+            elapsed,
+            best_val_acc,
+            best_epoch,
         )
 
         return TrainResult(
@@ -365,6 +390,7 @@ class Trainer:
             (y_pred, y_prob) numpy arrays.
         """
         if forward_fn is None:
+
             def forward_fn(batch):
                 inputs, labels = batch
                 inputs = inputs.to(self.device)
@@ -383,37 +409,3 @@ class Trainer:
             all_preds.append(preds)
 
         return np.concatenate(all_preds), np.concatenate(all_probs)
-
-
-def main() -> None:
-    """CLI entry point — delegates to individual training scripts."""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Train MI-EEG classifier")
-    parser.add_argument("--config", type=str, default=None, help="Config YAML path")
-    parser.add_argument(
-        "--baseline",
-        choices=["a", "b", "c", "dual"],
-        default=None,
-        help="Which baseline/model to run",
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    if args.baseline == "a":
-        from scripts.baseline_a_csp_lda import main as run_a  # type: ignore[import]
-        run_a()
-    elif args.baseline == "b":
-        from scripts.baseline_b_riemannian import main as run_b  # type: ignore[import]
-        run_b()
-    elif args.baseline == "c":
-        from scripts.baseline_c_vit import main as run_c  # type: ignore[import]
-        run_c()
-    else:
-        logger.info("Use --baseline {a,b,c,dual} to select a training pipeline.")
-        logger.info("Or run the baseline scripts directly from scripts/")
-
-
-if __name__ == "__main__":
-    main()

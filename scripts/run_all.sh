@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_all.sh  –  Run the full BCI thesis experiment pipeline
+# run_all.sh  –  Run the full BCI thesis experiment pipeline (8 stages)
 # =============================================================================
 #
-# This script runs all 10 pipeline stages in order.
+# This script runs all 8 pipeline stages in order.
 # Every stage saves its output to a shared run directory so that:
 #   • stages can be resumed if something crashes
 #   • each stage can also be run independently (see ONE-BY-ONE section below)
@@ -12,13 +12,10 @@
 # QUICK START  (full overnight run)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-#   bash scripts/run_all.sh
+#   RUN_DIR=runs/gpu_run bash scripts/run_all.sh --device cuda
 #
-#   # Specify GPU and backbone:
-#   RUN_DIR=runs/gpu_run bash scripts/run_all.sh --device cuda --backbone vit_tiny_patch16_224
-#
-#   # Specify device only:
-#   bash scripts/run_all.sh --device cuda
+#   # Resume an existing run (completed stages are skipped automatically):
+#   RUN_DIR=runs/gpu_run bash scripts/run_all.sh --device cuda
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # HOW TO RUN STAGES ONE BY ONE
@@ -27,13 +24,12 @@
 # First, create a run directory (pick any name):
 #
 #   export RUN=runs/my_experiment
-#   export BB=vit_tiny_patch16_224
 #
 # Then run each stage individually in order.
 # Every stage skips itself automatically if its output file already exists,
 # so it is always safe to re-run a stage.
 #
-#   Stage 1 – Download / verify datasets:
+#   Stage 1 – Download + process datasets → save .npz cache + spectrograms:
 #     uv run python scripts/pipeline/stage_01_download.py \
 #         --run-dir $RUN
 #
@@ -45,47 +41,35 @@
 #     uv run python scripts/pipeline/stage_03_baseline_b.py \
 #         --run-dir $RUN --n-folds 5 --seed 42
 #
-#   Stage 4 – Baseline C: CWT + ViT-Tiny (within-subject):
-#     uv run python scripts/pipeline/stage_04_baseline_c.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
+#   Stage 4 – Pretrain ViT on PhysioNet (9-channel spectrograms):
+#     uv run python scripts/pipeline/stage_04_pretrain_vit.py \
+#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
 #
-#   Stage 5 – Dual-branch, attention fusion (within-subject + LOSO):
-#     uv run python scripts/pipeline/stage_05_dual_attention.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
+#   Stage 5 – ViT-only baseline (PhysioNet-pretrained weights):
+#     uv run python scripts/pipeline/stage_05_vit_baseline.py \
+#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
 #
-#   Stage 6 – Dual-branch, gated fusion (within-subject):
-#     uv run python scripts/pipeline/stage_06_dual_gated.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
+#   Stage 6 – Dual-branch (attention + gated fusion ablation):
+#     uv run python scripts/pipeline/stage_06_dual_branch.py \
+#         --run-dir $RUN --epochs 50 --batch-size 32 --device cuda
 #
-#   Stage 7 – Pretrain backbone on PhysioNet MMIDB:
-#     uv run python scripts/pipeline/stage_07_pretrain.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
+#   Stage 7 – Reduced-data transfer learning experiment:
+#     uv run python scripts/pipeline/stage_07_reduced_data.py \
+#         --run-dir $RUN --epochs 50 --n-repeats 3 --device cuda
 #
-#   Stage 8 – Finetune comparison (scratch / imagenet / transfer):
-#     uv run python scripts/pipeline/stage_08_finetune.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --batch-size 32 --device cuda
-#
-#   Stage 9 – Reduced-data transfer learning experiment:
-#     uv run python scripts/pipeline/stage_09_reduced_data.py \
-#         --run-dir $RUN --backbone $BB --epochs 50 --n-repeats 3 --device cuda
-#
-#   Stage 10 – Compile results, figures, and stats:
-#     uv run python scripts/pipeline/stage_10_phase4.py \
+#   Stage 8 – Result analysis, plotting, statistical tests:
+#     uv run python scripts/pipeline/stage_08_results.py \
 #         --run-dir $RUN
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # OPTIONS (for this script)
 # ─────────────────────────────────────────────────────────────────────────────
-#   --backbone NAME    timm backbone name  (default: vit_tiny_patch16_224)
 #   --device DEVICE    pytorch device     (default: auto)
 #   --epochs N         max epochs/fold    (default: 50)
 #   --batch-size N     batch size         (default: 32)
 #   --n-folds N        CV folds           (default: 5)
-#   --n-repeats N      repeats for Stage 9 (default: 3)
+#   --n-repeats N      repeats for Stage 7 (default: 3)
 #   --seed N           random seed        (default: 42)
-#   --n-subjects N     PhysioNet subjects for Stage 8 (default: all 109)
-#   --data-dir DIR     MNE data directory (default: ~/mne_data)
-#   --data MODE        'real' (default) or 'synthetic' (fast CPU smoke test)
 #
 # Set RUN_DIR env variable to reuse an existing directory, e.g.:
 #   RUN_DIR=runs/2024-01-15_143022 bash scripts/run_all.sh
@@ -95,10 +79,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #   • Must be run from the project root (where pyproject.toml lives).
 #   • Requires `uv` to be installed and `uv sync` already run.
+#   • Stage 01 must complete before any other stage (builds .npz cache).
 #   • Each stage writes results under the same run directory.
 #     Completed stages are skipped on re-run (idempotent).
 #   • All output is also logged to <run-dir>/run_all.log.
-#   • Stages 4-10 benefit greatly from a GPU. On CPU they may take many hours.
+#   • Stages 4-7 benefit greatly from a GPU. On CPU they may take many hours.
 # =============================================================================
 
 set -euo pipefail
@@ -110,30 +95,22 @@ if [[ ! -f "pyproject.toml" ]]; then
 fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────
-BACKBONE="vit_tiny_patch16_224"
 DEVICE="auto"
 EPOCHS=50
 BATCH_SIZE=32
 N_FOLDS=5
 N_REPEATS=3
 SEED=42
-N_SUBJECTS=""
-DATA_DIR="~/mne_data"
-DATA_MODE="real"
 
 # ── Parse flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --backbone)    BACKBONE="$2";    shift 2 ;;
         --device)      DEVICE="$2";      shift 2 ;;
         --epochs)      EPOCHS="$2";      shift 2 ;;
         --batch-size)  BATCH_SIZE="$2";  shift 2 ;;
         --n-folds)     N_FOLDS="$2";     shift 2 ;;
         --n-repeats)   N_REPEATS="$2";   shift 2 ;;
         --seed)        SEED="$2";        shift 2 ;;
-        --n-subjects)  N_SUBJECTS="$2";  shift 2 ;;
-        --data-dir)    DATA_DIR="$2";    shift 2 ;;
-        --data)        DATA_MODE="$2";   shift 2 ;;
         *)
             echo "Unknown option: $1" >&2
             echo "Run: bash scripts/run_all.sh  (with no args) to see usage in the header." >&2
@@ -141,12 +118,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# ── Derive backbone short tag (for checkpoint path) ───────────────────────
-case "$BACKBONE" in
-    vit_tiny_patch16_224) BACKBONE_SHORT="vit" ;;
-    *)                    BACKBONE_SHORT="$BACKBONE" ;;
-esac
 
 # ── Run directory ─────────────────────────────────────────────────────────
 if [[ -z "${RUN_DIR:-}" ]]; then
@@ -171,57 +142,36 @@ _banner() {
     _log "$line"
 }
 
-# ── Shared Python flags ───────────────────────────────────────────────────
-PY_BASE=(
-    --run-dir      "$RUN_DIR"
-    --data-dir     "$DATA_DIR"
-    --device       "$DEVICE"
-    --seed         "$SEED"
-    --n-folds      "$N_FOLDS"
-    --epochs       "$EPOCHS"
-    --batch-size   "$BATCH_SIZE"
-    --backbone     "$BACKBONE"
-    --data         "$DATA_MODE"
-)
-
-PRETRAIN_FLAGS=("${PY_BASE[@]}")
-[[ -n "$N_SUBJECTS" ]] && PRETRAIN_FLAGS+=(--n-subjects "$N_SUBJECTS")
-
-CKPT="$RUN_DIR/checkpoints/vit_pretrained_physionet_${BACKBONE_SHORT}.pt"
-
 # ── Print settings ────────────────────────────────────────────────────────
-_banner "BCI THESIS PIPELINE  –  Full run"
+_banner "BCI THESIS PIPELINE  –  Full run (8 stages)"
 _log "Run directory : $RUN_DIR"
-_log "Backbone      : $BACKBONE  (short: $BACKBONE_SHORT)"
 _log "Device        : $DEVICE"
 _log "Epochs        : $EPOCHS"
 _log "Batch size    : $BATCH_SIZE"
 _log "CV folds      : $N_FOLDS"
-_log "Repeats (S9)  : $N_REPEATS"
+_log "Repeats (S7)  : $N_REPEATS"
 _log "Seed          : $SEED"
-_log "Data dir      : $DATA_DIR"
-_log "Data mode     : $DATA_MODE"
 _log ""
 
 T_ALL=$(date +%s)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 – Download / verify datasets
+# Stage 1 – Download + process → .npz cache + spectrograms
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 1/10 – Download / verify datasets"
+_banner "Stage 1/8 – Download + process datasets"
 T0=$(date +%s)
 uv run python scripts/pipeline/stage_01_download.py \
-    --run-dir "$RUN_DIR" --data-dir "$DATA_DIR" \
+    --run-dir "$RUN_DIR" \
     2>&1 | tee -a "$LOG"
 _log "Stage 1 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 – Baseline A: CSP + LDA
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 2/10 – Baseline A: CSP + LDA"
+_banner "Stage 2/8 – Baseline A: CSP + LDA"
 T0=$(date +%s)
 uv run python scripts/pipeline/stage_02_baseline_a.py \
-    --run-dir "$RUN_DIR" --data-dir "$DATA_DIR" \
+    --run-dir "$RUN_DIR" \
     --n-folds "$N_FOLDS" --seed "$SEED" \
     2>&1 | tee -a "$LOG"
 _log "Stage 2 done in $(( $(date +%s) - T0 ))s"
@@ -229,83 +179,74 @@ _log "Stage 2 done in $(( $(date +%s) - T0 ))s"
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3 – Baseline B: Riemannian + LDA
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 3/10 – Baseline B: Riemannian + LDA"
+_banner "Stage 3/8 – Baseline B: Riemannian + LDA"
 T0=$(date +%s)
 uv run python scripts/pipeline/stage_03_baseline_b.py \
-    --run-dir "$RUN_DIR" --data-dir "$DATA_DIR" \
+    --run-dir "$RUN_DIR" \
     --n-folds "$N_FOLDS" --seed "$SEED" \
     2>&1 | tee -a "$LOG"
 _log "Stage 3 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 4 – Baseline C: CWT + ViT-Tiny
+# Stage 4 – Pretrain ViT on PhysioNet (9-channel spectrograms)
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 4/10 – Baseline C: CWT + ViT-Tiny"
+_banner "Stage 4/8 – Pretrain ViT on PhysioNet"
 T0=$(date +%s)
-uv run python scripts/pipeline/stage_04_baseline_c.py \
-    "${PY_BASE[@]}" \
+uv run python scripts/pipeline/stage_04_pretrain_vit.py \
+    --run-dir "$RUN_DIR" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
     2>&1 | tee -a "$LOG"
 _log "Stage 4 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 5 – Dual-branch, attention fusion (within + LOSO)
+# Stage 5 – ViT-only baseline (PhysioNet-pretrained)
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 5/10 – Dual-branch, attention fusion"
+_banner "Stage 5/8 – ViT-only baseline"
 T0=$(date +%s)
-uv run python scripts/pipeline/stage_05_dual_attention.py \
-    "${PY_BASE[@]}" \
+uv run python scripts/pipeline/stage_05_vit_baseline.py \
+    --run-dir "$RUN_DIR" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --n-folds "$N_FOLDS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 5 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 6 – Dual-branch, gated fusion
+# Stage 6 – Dual-branch (attention + gated fusion ablation)
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 6/10 – Dual-branch, gated fusion"
+_banner "Stage 6/8 – Dual-branch (attention + gated fusion)"
 T0=$(date +%s)
-uv run python scripts/pipeline/stage_06_dual_gated.py \
-    "${PY_BASE[@]}" \
+uv run python scripts/pipeline/stage_06_dual_branch.py \
+    --run-dir "$RUN_DIR" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --n-folds "$N_FOLDS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 6 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 7 – Pretrain ViT on PhysioNet
+# Stage 7 – Reduced-data transfer learning experiment
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 7/10 – Pretrain ViT on PhysioNet MMIDB"
+_banner "Stage 7/8 – Reduced-data transfer learning experiment"
 T0=$(date +%s)
-uv run python scripts/pipeline/stage_07_pretrain.py \
-    "${PRETRAIN_FLAGS[@]}" \
+uv run python scripts/pipeline/stage_07_reduced_data.py \
+    --run-dir "$RUN_DIR" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --n-repeats "$N_REPEATS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 7 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 8 – Finetune comparison
+# Stage 8 – Result analysis, plotting, statistical tests
 # ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 8/10 – Finetune: scratch / imagenet / transfer"
+_banner "Stage 8/8 – Result analysis + plots + stats"
 T0=$(date +%s)
-uv run python scripts/pipeline/stage_08_finetune.py \
-    "${PY_BASE[@]}" --checkpoint "$CKPT" \
-    2>&1 | tee -a "$LOG"
-_log "Stage 8 done in $(( $(date +%s) - T0 ))s"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 9 – Reduced-data experiment
-# ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 9/10 – Reduced-data transfer learning experiment"
-T0=$(date +%s)
-uv run python scripts/pipeline/stage_09_reduced_data.py \
-    "${PY_BASE[@]}" --checkpoint "$CKPT" --n-repeats "$N_REPEATS" \
-    2>&1 | tee -a "$LOG"
-_log "Stage 9 done in $(( $(date +%s) - T0 ))s"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 10 – Phase 4: Compile + visualize + stats
-# ─────────────────────────────────────────────────────────────────────────────
-_banner "Stage 10/10 – Compile results, figures, and stats"
-T0=$(date +%s)
-uv run python scripts/pipeline/stage_10_phase4.py \
+uv run python scripts/pipeline/stage_08_results.py \
     --run-dir "$RUN_DIR" \
     2>&1 | tee -a "$LOG"
-_log "Stage 10 done in $(( $(date +%s) - T0 ))s"
+_log "Stage 8 done in $(( $(date +%s) - T0 ))s"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Done
@@ -317,7 +258,6 @@ S=$(( TOTAL % 60 ))
 
 _banner "ALL STAGES COMPLETE  (${H}h ${M}m ${S}s)"
 _log "Run directory : $RUN_DIR"
-_log "Backbone      : $BACKBONE  (short: $BACKBONE_SHORT)"
 _log "Results       : $RUN_DIR/results/"
 _log "Plots         : $RUN_DIR/plots/"
 _log "Figures       : $RUN_DIR/figures/"

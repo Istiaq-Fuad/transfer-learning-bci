@@ -28,8 +28,8 @@ dataset:
     - CP4
 
 preprocessing:
-  l_freq: 4.0
-  h_freq: 40.0
+  l_freq: 8.0
+  h_freq: 32.0
   notch_freq: 50.0
   apply_ica: true
   ica_method: "fastica"
@@ -40,11 +40,11 @@ preprocessing:
 
 spectrogram:
   wavelet: "morl"
-  freq_min: 4.0
-  freq_max: 40.0
+  freq_min: 8.0
+  freq_max: 32.0
   n_freqs: 64
   image_size: [224, 224]
-  channel_mode: "rgb_c3_cz_c4"
+  channel_mode: "multichannel"
 
 model:
   vit_model_name: "vit_tiny_patch16_224"

@@ -41,7 +41,7 @@ from bci.data.preprocessing import apply_preprocessing_pipeline
 from bci.data.transforms import CWTSpectrogramTransform, normalize_imagenet
 from bci.features.csp import FBCSPFeatureExtractor
 from bci.features.riemannian import FBRiemannianFeatureExtractor
-from bci.utils.config import AugmentationConfig, ModelConfig, PreprocessingConfig, SpectrogramConfig
+from bci.utils.config import AugmentationConfig, PreprocessingConfig, SpectrogramConfig
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +134,13 @@ class DualBranchFoldBuilder:
 
         self.spec_config = spec_config or SpectrogramConfig(
             wavelet="morl",
-            freq_min=4.0,
-            freq_max=40.0,
+            freq_min=8.0,
+            freq_max=32.0,
             n_freqs=64,
             image_size=(224, 224),
-            channel_mode="rgb_c3_cz_c4",
+            channel_mode="multichannel",
             normalize_mode="joint",
-            apply_imagenet_norm=True,
+            apply_imagenet_norm=False,
         )
         self._transform = CWTSpectrogramTransform(self.spec_config)
         self._augmenter = EEGAugmenter(self.aug_config, seed=seed)
@@ -235,12 +235,9 @@ class DualBranchFoldBuilder:
     def _epochs_to_images(self, X: np.ndarray) -> np.ndarray:
         """Convert EEG epochs to normalised CHW float32 images.
 
-        For "rgb_c3_cz_c4" mode: returns (n_trials, 3, H, W) after
-        converting HWC uint8 → CHW float32 in [0,1] then applying
-        ImageNet normalisation (if configured).
-
-        For "multichannel" mode: images are already (n_trials, n_ch, H, W)
-        in [0,1]; only ImageNet norm is applied on top.
+        For "multichannel" mode: images are (n_trials, n_ch, H, W) in [0,1].
+        For other modes (mosaic / single): images are converted to (n_trials, 1, H, W).
+        ImageNet normalisation is applied on top if configured.
 
         Args:
             X: EEG epochs (n_trials, n_channels, n_times).
@@ -250,10 +247,7 @@ class DualBranchFoldBuilder:
         """
         images = self._transform.transform_epochs(X, self.channel_names, self.sfreq)
 
-        if self.spec_config.channel_mode == "rgb_c3_cz_c4":
-            # images: (n_trials, H, W, 3) uint8 → (n_trials, 3, H, W) float32 in [0,1]
-            images = images.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
-        elif self.spec_config.channel_mode == "multichannel":
+        if self.spec_config.channel_mode == "multichannel":
             # images: already (n_trials, n_ch, H, W) float32 in [0,1]
             pass
         else:

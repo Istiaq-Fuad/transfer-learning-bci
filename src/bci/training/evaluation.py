@@ -7,7 +7,6 @@ import logging
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
-    classification_report,
     cohen_kappa_score,
     f1_score,
     roc_auc_score,
@@ -47,29 +46,11 @@ def compute_metrics(
                 metrics["auc_roc"] = roc_auc_score(y_true, y_prob[:, 1])
             else:
                 metrics["auc_roc"] = roc_auc_score(
-                    y_true, y_prob, multi_class="ovr",
+                    y_true,
+                    y_prob,
+                    multi_class="ovr",
                 )
         except Exception:
             logger.warning("Could not compute AUC-ROC")
 
     return metrics
-
-
-def print_classification_report(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    class_names: list[str] | None = None,
-) -> str:
-    """Print and return a formatted classification report.
-
-    Args:
-        y_true: True labels.
-        y_pred: Predicted labels.
-        class_names: Names for the classes.
-
-    Returns:
-        Formatted classification report string.
-    """
-    report = classification_report(y_true, y_pred, target_names=class_names)
-    logger.info("\n%s", report)
-    return report

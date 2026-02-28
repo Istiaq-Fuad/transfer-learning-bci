@@ -54,7 +54,7 @@ class TestViTPretraining:
 
         cfg = ModelConfig(vit_pretrained=False, n_classes=2)
         model = ViTBranch(config=cfg, as_feature_extractor=False)
-        imgs = torch.rand(4, 3, 224, 224)
+        imgs = torch.rand(4, 9, 224, 224)
         out = model(imgs)
         assert out.shape == (4, 2), f"Expected (4,2), got {out.shape}"
 
@@ -65,7 +65,7 @@ class TestViTPretraining:
 
         cfg = ModelConfig(vit_pretrained=False)
         model = ViTBranch(config=cfg, as_feature_extractor=True)
-        imgs = torch.rand(4, 3, 224, 224)
+        imgs = torch.rand(4, 9, 224, 224)
         out = model(imgs)
         assert out.shape == (4, 192), f"Expected (4,192), got {out.shape}"
 
@@ -73,7 +73,7 @@ class TestViTPretraining:
         """pretrain_vit saves a .pt file that can be loaded."""
         from bci.training.cross_validation import make_synthetic_subject_data
         from bci.utils.config import SpectrogramConfig
-        from scripts.pretrain_physionet import pretrain_vit
+        from scripts.pipeline.stage_04_pretrain_vit import pretrain_vit
 
         subject_data = make_synthetic_subject_data(n_subjects=2)
         spec_cfg = SpectrogramConfig(n_freqs=8, image_size=(224, 224))
@@ -104,7 +104,7 @@ class TestViTPretraining:
         """Saved checkpoint has ViTBranch backbone keys."""
         from bci.training.cross_validation import make_synthetic_subject_data
         from bci.utils.config import SpectrogramConfig
-        from scripts.pretrain_physionet import pretrain_vit
+        from scripts.pipeline.stage_04_pretrain_vit import pretrain_vit
 
         subject_data = make_synthetic_subject_data(n_subjects=1)
         spec_cfg = SpectrogramConfig(n_freqs=8, image_size=(224, 224))
@@ -151,12 +151,14 @@ class TestTransferLearning:
         cfg = ModelConfig(vit_pretrained=False, n_classes=2)
         vit = ViTBranch(config=cfg, as_feature_extractor=False)
         ckpt_path = Path(tmpdir) / "vit.pt"
-        torch.save(vit.state_dict(), ckpt_path)
+        # Save backbone state_dict — matches format written by pretrain_physionet.py
+        # and expected by finetune_bci_iv2a._build_model (loads into vit_branch.backbone)
+        torch.save(vit.backbone.state_dict(), ckpt_path)
         return ckpt_path
 
     def test_scratch_model_all_params_trainable(self):
         """Scratch condition: all DualBranchModel params are trainable."""
-        from scripts.finetune_bci_iv2a import _build_model
+        from scripts.pipeline.stage_06_dual_branch import _build_model
 
         model = _build_model(
             condition="scratch",
@@ -171,7 +173,7 @@ class TestTransferLearning:
 
     def test_imagenet_condition_freezes_most_vit(self):
         """ImageNet condition: most ViT backbone params are frozen."""
-        from scripts.finetune_bci_iv2a import _build_model
+        from scripts.pipeline.stage_06_dual_branch import _build_model
 
         model = _build_model(
             condition="imagenet",
@@ -189,7 +191,7 @@ class TestTransferLearning:
 
     def test_transfer_loads_checkpoint(self):
         """Transfer condition loads checkpoint without errors."""
-        from scripts.finetune_bci_iv2a import _build_model
+        from scripts.pipeline.stage_06_dual_branch import _build_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ckpt_path = self._make_checkpoint(tmpdir)
@@ -204,7 +206,7 @@ class TestTransferLearning:
 
     def test_transfer_missing_checkpoint_raises(self):
         """Transfer condition raises FileNotFoundError when checkpoint missing."""
-        from scripts.finetune_bci_iv2a import _build_model
+        from scripts.pipeline.stage_06_dual_branch import _build_model
 
         with pytest.raises(FileNotFoundError):
             _build_model(
@@ -217,7 +219,7 @@ class TestTransferLearning:
 
     def test_transfer_forward_pass(self):
         """Transfer-initialised model can do a forward pass."""
-        from scripts.finetune_bci_iv2a import _build_model
+        from scripts.pipeline.stage_06_dual_branch import _build_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ckpt_path = self._make_checkpoint(tmpdir)
@@ -230,7 +232,7 @@ class TestTransferLearning:
             )
             model.eval()
             with torch.no_grad():
-                imgs = torch.rand(2, 3, 224, 224)
+                imgs = torch.rand(2, 9, 224, 224)
                 feats = torch.rand(2, 20)
                 out = model(imgs, feats)
             assert out.shape == (2, 2), f"Expected (2,2), got {out.shape}"
@@ -300,8 +302,8 @@ class TestEndToEndPhase3:
         from bci.data.dual_branch_builder import DualBranchFoldBuilder
         from bci.training.cross_validation import make_synthetic_subject_data
         from bci.utils.config import SpectrogramConfig
-        from scripts.finetune_bci_iv2a import _build_model, _train_and_eval_fold
-        from scripts.pretrain_physionet import pretrain_vit
+        from scripts.pipeline.stage_06_dual_branch import _build_model, _train_and_eval_fold
+        from scripts.pipeline.stage_04_pretrain_vit import pretrain_vit
 
         spec_cfg = SpectrogramConfig(n_freqs=8, image_size=(224, 224))
         source_data = make_synthetic_subject_data(n_subjects=2)
@@ -366,8 +368,8 @@ class TestEndToEndPhase3:
         from bci.data.dual_branch_builder import DualBranchFoldBuilder
         from bci.training.cross_validation import make_synthetic_subject_data
         from bci.utils.config import SpectrogramConfig
-        from scripts.pretrain_physionet import pretrain_vit
-        from scripts.reduced_data_experiment import _run_one_trial
+        from scripts.pipeline.stage_04_pretrain_vit import pretrain_vit
+        from scripts.pipeline.stage_07_reduced_data import _run_one_trial
 
         spec_cfg = SpectrogramConfig(n_freqs=8, image_size=(224, 224))
         source_data = make_synthetic_subject_data(n_subjects=1)

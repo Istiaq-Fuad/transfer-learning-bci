@@ -38,17 +38,9 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import PCA
 from sklearn.pipeline import Pipeline
 
-logger = logging.getLogger(__name__)
+from bci.utils.config import FILTER_BANK_BANDS
 
-# Default sub-bands for Filter Bank Riemannian (mirrors FBCSP bands)
-_DEFAULT_BANDS: list[tuple[float, float]] = [
-    (8.0, 12.0),
-    (12.0, 16.0),
-    (16.0, 20.0),
-    (20.0, 24.0),
-    (24.0, 28.0),
-    (28.0, 32.0),
-]
+logger = logging.getLogger(__name__)
 
 
 def riemannian_recenter(
@@ -229,7 +221,7 @@ class FBRiemannianFeatureExtractor(BaseEstimator, TransformerMixin):
 
     Args:
         bands: List of (l_freq, h_freq) tuples defining the sub-bands.
-            Default: 6 bands covering 8–32 Hz in 4 Hz steps.
+            Default: 6 bands covering 8–32 Hz in 4 Hz steps (from FILTER_BANK_BANDS).
         sfreq: Sampling frequency of the input data in Hz. Default: 128.0.
         estimator: Covariance estimator — "oas" | "lwf" | "scm". Default: "oas".
         metric: Riemannian metric for tangent space. Default: "riemann".
@@ -255,7 +247,7 @@ class FBRiemannianFeatureExtractor(BaseEstimator, TransformerMixin):
         metric: str = "riemann",
         n_components_pca: int | None = 128,
     ) -> None:
-        self.bands = bands if bands is not None else list(_DEFAULT_BANDS)
+        self.bands = bands if bands is not None else list(FILTER_BANK_BANDS)
         self.sfreq = sfreq
         self.estimator = estimator
         self.metric = metric

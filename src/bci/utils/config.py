@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 DATA_DIR = PROJECT_ROOT / "data"
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+_OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
 # ---------------------------------------------------------------------------
 # Filter bank sub-bands (mu + beta, 8–32 Hz in 4 Hz steps)
@@ -30,6 +30,20 @@ FILTER_BANK_BANDS: list[tuple[float, float]] = [
     (24.0, 28.0),  # upper-beta
     (28.0, 32.0),  # upper-beta
 ]
+
+# ---------------------------------------------------------------------------
+# Canonical architecture constants for the dual-branch model
+# Import these in pipeline scripts to avoid magic numbers.
+# ---------------------------------------------------------------------------
+
+#: ViT-Tiny backbone output dimension (before fusion)
+VIT_FEATURE_DIM: int = 192
+
+#: Default fused feature dimension after AttentionFusion / GatedFusion
+DEFAULT_FUSED_DIM: int = 128
+
+#: Default ClassifierHead hidden layer dimension
+DEFAULT_CLS_HIDDEN: int = 64
 
 
 @dataclass
@@ -110,15 +124,15 @@ class SpectrogramConfig:
     """Configuration for CWT spectrogram generation."""
 
     wavelet: str = "morl"
-    freq_min: float = 4.0
-    freq_max: float = 40.0
+    freq_min: float = 8.0
+    freq_max: float = 32.0
     n_freqs: int = 64
     image_size: tuple[int, int] = (224, 224)
     # How to compose channels into an image
-    # "rgb_c3_cz_c4" = map C3→R, Cz→G, C4→B (legacy 3-channel)
+    # "rgb_c3_cz_c4" = map C3→R, Cz→G, C4→B (legacy 3-channel, deprecated)
     # "mosaic"       = tile multiple channel spectrograms into a grid
     # "multichannel" = produce one image per selected channel (N-channel ViT input)
-    channel_mode: str = "rgb_c3_cz_c4"
+    channel_mode: str = "multichannel"
     # Channels to use in "multichannel" mode (9 motor-cortex channels)
     spectrogram_channels: list[str] = field(
         default_factory=lambda: ["C3", "C1", "Cz", "C2", "C4", "FC3", "FC4", "CP3", "CP4"]
@@ -128,7 +142,8 @@ class SpectrogramConfig:
     # "joint"        = normalise across all channels jointly (preserves laterality)
     normalize_mode: str = "joint"
     # Whether to apply ImageNet mean/std normalisation after [0,1] scaling
-    apply_imagenet_norm: bool = True
+    # Deprecated: use dataset-specific per-channel mean/std instead (Phase B)
+    apply_imagenet_norm: bool = False
     output_dir: str = str(DATA_DIR / "spectrograms")
 
 
@@ -165,8 +180,8 @@ class ModelConfig:
     vit_model_name: str = "vit_tiny_patch16_224"
     vit_pretrained: bool = True
     vit_drop_rate: float = 0.1
-    # Number of input channels for the ViT (3 for RGB legacy, 9 for multichannel)
-    in_chans: int = 3
+    # Number of input channels for the ViT (9 for multichannel, 3 for legacy RGB)
+    in_chans: int = 9
 
     # Math branch
     csp_n_components: int = 6
@@ -212,7 +227,7 @@ class TrainingConfig:
     num_workers: int = 4
 
     # Logging
-    log_dir: str = str(OUTPUTS_DIR / "runs")
+    log_dir: str = str(_OUTPUTS_DIR / "runs")
     checkpoint_dir: str = str(CHECKPOINTS_DIR)
 
 

@@ -153,7 +153,7 @@ class TestCrossValidation:
 
     def test_csp_lda_predict_fn_output_shape(self):
         """predict_fn from Baseline A returns correct shapes."""
-        from scripts.baseline_a_csp_lda import make_predict_fn  # type: ignore[import]
+        from scripts.pipeline.stage_02_baseline_a import make_predict_fn  # type: ignore[import]
 
         predict_fn = make_predict_fn(n_components=4)
         X_train, y_train = _make_eeg_data(n_trials=30)
@@ -165,7 +165,7 @@ class TestCrossValidation:
 
     def test_riemannian_lda_predict_fn_output_shape(self):
         """predict_fn from Baseline B returns correct shapes."""
-        from scripts.baseline_b_riemannian import make_predict_fn  # type: ignore[import]
+        from scripts.pipeline.stage_03_baseline_b import make_predict_fn  # type: ignore[import]
 
         predict_fn = make_predict_fn(estimator="scm", metric="riemann")
         X_train, y_train = _make_eeg_data(n_trials=30)
