@@ -418,8 +418,7 @@ def main() -> None:
     # --- Build fold builder ---
     builder = DualBranchFoldBuilder(
         csp_n_components=args.csp_components,
-        csp_reg="ledoit_wolf",
-        riemann_estimator="lwf",
+        riemann_estimator="oas",
         riemann_metric="riemann",
         sfreq=sfreq,
         channel_names=channel_names,

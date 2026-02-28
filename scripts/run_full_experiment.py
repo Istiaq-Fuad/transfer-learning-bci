@@ -557,11 +557,9 @@ def stage_dual_branch(
 
     builder = DualBranchFoldBuilder(
         csp_n_components=6,
-        csp_reg="ledoit_wolf",
-        riemann_estimator="lwf",
+        riemann_estimator="oas",
         riemann_metric="riemann",
         sfreq=128.0,
-        channel_names=["C3", "Cz", "C4"],
     )
 
     _device = torch.device(device)
@@ -857,11 +855,9 @@ def stage_finetune(
 
     builder = DualBranchFoldBuilder(
         csp_n_components=6,
-        csp_reg="ledoit_wolf",
-        riemann_estimator="lwf",
+        riemann_estimator="oas",
         riemann_metric="riemann",
         sfreq=128.0,
-        channel_names=["C3", "Cz", "C4"],
     )
     _device = torch.device(device)
 
@@ -1032,11 +1028,9 @@ def stage_reduced_data(
 
     builder = DualBranchFoldBuilder(
         csp_n_components=6,
-        csp_reg="ledoit_wolf",
-        riemann_estimator="lwf",
+        riemann_estimator="oas",
         riemann_metric="riemann",
         sfreq=128.0,
-        channel_names=["C3", "Cz", "C4"],
     )
     _device = torch.device(device)
 

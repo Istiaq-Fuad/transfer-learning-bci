@@ -226,11 +226,9 @@ def main() -> None:
 
     builder = DualBranchFoldBuilder(
         csp_n_components=6,
-        csp_reg="ledoit_wolf",
-        riemann_estimator="lwf",
+        riemann_estimator="oas",
         riemann_metric="riemann",
         sfreq=128.0,
-        channel_names=["C3", "Cz", "C4"],
     )
 
     set_seed(args.seed)
