@@ -34,7 +34,7 @@ from pathlib import Path
 
 import bci.models.vit_branch as _vit_mod
 from bci.utils.logging import setup_stage_logging
-from bci.utils.visualization import save_fold_plots
+from bci.utils.visualization import save_confusion_matrix, save_per_subject_accuracy
 
 _BACKBONE_SHORT = {
     _vit_mod.MODEL_NAME: _vit_mod.BACKBONE_SHORT,
@@ -331,6 +331,8 @@ def run_dual_branch(
     _device = torch.device(device)
     fused_dim = _FUSED_DIM.get(backbone, 256)
     cls_hidden = _CLASSIFIER_HIDDEN.get(backbone, 128)
+    # Must match Stage 04 pretraining resolution
+    TARGET_IMG_SIZE = 64
 
     builder = DualBranchFoldBuilder(
         csp_n_components=6,
@@ -353,7 +355,7 @@ def run_dual_branch(
             classifier_hidden_dim=cls_hidden,
             n_classes=2,
         )
-        model = DualBranchModel(math_input_dim=math_input_dim, config=cfg)
+        model = DualBranchModel(math_input_dim=math_input_dim, config=cfg, img_size=TARGET_IMG_SIZE)
         if checkpoint_path.exists():
             ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
             backbone_state = {
@@ -368,6 +370,13 @@ def run_dual_branch(
         return model
 
     def normalise_specs(imgs: np.ndarray) -> np.ndarray:
+        # Resize from on-disk 224×224 to TARGET_IMG_SIZE×TARGET_IMG_SIZE
+        if imgs.shape[-1] != TARGET_IMG_SIZE:
+            t = torch.from_numpy(imgs.astype(np.float32))
+            t = torch.nn.functional.interpolate(
+                t, size=(TARGET_IMG_SIZE, TARGET_IMG_SIZE), mode="bilinear", align_corners=False
+            )
+            imgs = t.numpy()
         return (imgs - spec_mean[None, :, None, None]) / spec_std[None, :, None, None]
 
     t0 = time.time()
@@ -447,11 +456,6 @@ def run_dual_branch(
                     fr.kappa,
                 )
                 all_folds.append(fr)
-                tag = f"S{sid:02d}_fold{fold_counter:03d}"
-                try:
-                    save_fold_plots(train_result, y[test_idx], y_pred, plots_dir, tag)
-                except Exception as e:
-                    log.warning("Plot save failed for %s: %s", tag, e)
                 fold_counter += 1
 
     else:  # loso
@@ -527,11 +531,6 @@ def run_dual_branch(
                 fr.kappa,
             )
             all_folds.append(fr)
-            tag = f"S{test_sid:02d}_loso_fold{fold_idx:03d}"
-            try:
-                save_fold_plots(train_result, y_test, y_pred, plots_dir, tag)
-            except Exception as e:
-                log.warning("Plot save failed for %s: %s", tag, e)
 
     elapsed = time.time() - t0
     result = CVResult(strategy=strategy, model_name=MODEL_NAME, folds=all_folds)
@@ -544,41 +543,30 @@ def run_dual_branch(
         result.std_accuracy,
     )
 
-    # Per-subject summary plot (within-subject only)
+    # ── Summary plots ──────────────────────────────────────────────────────
+    fusion_label = fusion.replace("_", " ").title()
+    strategy_label = "Within-Subject CV" if strategy == "within_subject" else "LOSO CV"
+    try:
+        agg_y_true = np.concatenate([f.y_true for f in all_folds])
+        agg_y_pred = np.concatenate([f.y_pred for f in all_folds])
+        save_confusion_matrix(
+            agg_y_true,
+            agg_y_pred,
+            plots_dir,
+            filename="confusion_matrix",
+            title=f"Dual-Branch {fusion_label} Fusion ({strategy_label})",
+        )
+    except Exception as e:
+        log.warning("Confusion matrix plot failed: %s", e)
+
     if strategy == "within_subject":
         try:
-            import matplotlib
-
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-
-            per_subj = result.per_subject_accuracy
-            sids = sorted(per_subj.keys())
-            accs = [per_subj[s] for s in sids]
-            mean_a = sum(accs) / len(accs)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            colors = sns.color_palette("viridis", n_colors=len(sids))
-            bars = ax.bar([f"S{s}" for s in sids], accs, color=colors)
-            ax.axhline(y=mean_a, color="red", linestyle="--", label=f"Mean: {mean_a:.1f}%")
-            for bar, acc in zip(bars, accs):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2.0,
-                    bar.get_height() + 0.5,
-                    f"{acc:.1f}",
-                    ha="center",
-                    fontsize=9,
-                )
-            ax.set_xlabel("Subject")
-            ax.set_ylabel("Accuracy (%)")
-            ax.set_title(f"Stage 06 [{fusion}] – {MODEL_NAME} per-subject accuracy")
-            ax.set_ylim(0, 105)
-            ax.legend()
-            ax.grid(True, alpha=0.3, axis="y")
-            plt.tight_layout()
-            plots_dir.mkdir(parents=True, exist_ok=True)
-            fig.savefig(plots_dir / "per_subject_accuracy.png", dpi=120, bbox_inches="tight")
-            plt.close(fig)
+            save_per_subject_accuracy(
+                result.per_subject_accuracy,
+                plots_dir,
+                filename="per_subject_accuracy",
+                title=f"Dual-Branch {fusion_label} Fusion \u2013 Per-Subject Accuracy ({strategy_label})",
+            )
         except Exception as e:
             log.warning("Per-subject plot failed: %s", e)
 

@@ -124,6 +124,7 @@ class Trainer:
         seed: int = 42,
         num_workers: int = 0,
         backbone_lr_scale: float | None = None,
+        layer_lr_decay: float | None = None,
     ) -> None:
         self.model = model
         self.device = torch.device(device)
@@ -140,15 +141,23 @@ class Trainer:
         self.seed = seed
         self.num_workers = num_workers
         self.backbone_lr_scale = backbone_lr_scale
+        self.layer_lr_decay = layer_lr_decay
 
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     def _make_optimizer_and_scheduler(self, total_epochs: int):
-        if self.backbone_lr_scale is not None and hasattr(self.model, "vit_branch"):
-            # Differential LR: lower rate for the pretrained backbone,
-            # higher rate for everything else.
-            vit_branch = self.model.vit_branch  # type: ignore[attr-defined]
+        # --- Layer-wise LR decay (finest granularity) -----------------------
+        if self.layer_lr_decay is not None and hasattr(self.model, "get_layerwise_param_groups"):
+            param_groups = self._build_layerwise_param_groups(self.lr, self.layer_lr_decay)
+        # --- Two-group differential LR (backbone vs rest) -------------------
+        elif self.backbone_lr_scale is not None and (
+            hasattr(self.model, "vit_branch") or hasattr(self.model, "get_backbone_params")
+        ):
+            if hasattr(self.model, "vit_branch"):
+                vit_branch = self.model.vit_branch  # type: ignore[attr-defined]
+            else:
+                vit_branch = self.model
             backbone_param_ids = {id(p) for p in vit_branch.get_backbone_params()}
             backbone_params = [
                 p
@@ -169,6 +178,7 @@ class Trainer:
                 self.lr * self.backbone_lr_scale,
                 self.lr,
             )
+        # --- Uniform LR (default) ------------------------------------------
         else:
             param_groups = [{"params": list(self.model.parameters()), "lr": self.lr}]
 
@@ -178,6 +188,43 @@ class Trainer:
         )
         scheduler = _cosine_with_warmup_schedule(optimizer, self.warmup_epochs, total_epochs)
         return optimizer, scheduler
+
+    def _build_layerwise_param_groups(
+        self,
+        base_lr: float,
+        decay: float,
+    ) -> list[dict]:
+        """Create per-layer parameter groups with exponential LR decay.
+
+        Earlier (shallower) layers receive a lower learning rate::
+
+            lr_i = base_lr * decay^(N - 1 - i)
+
+        where *i* is the layer index (0 = shallowest) and *N* is the total
+        number of groups.  The deepest group (head) always gets ``base_lr``.
+        """
+        layer_groups = self.model.get_layerwise_param_groups()  # type: ignore[attr-defined]
+        n_groups = len(layer_groups)
+        param_groups: list[dict] = []
+
+        for i, (name, params) in enumerate(layer_groups):
+            trainable = [p for p in params if p.requires_grad]
+            if not trainable:
+                continue
+            group_lr = base_lr * (decay ** (n_groups - 1 - i))
+            param_groups.append({"params": trainable, "lr": group_lr})
+            logger.debug(
+                "  layer-wise LR: %-15s  lr=%.2e  (%d params)", name, group_lr, len(trainable)
+            )
+
+        logger.info(
+            "Layer-wise LR decay=%.2f: %d groups, lr range [%.2e .. %.2e]",
+            decay,
+            len(param_groups),
+            param_groups[0]["lr"] if param_groups else 0.0,
+            param_groups[-1]["lr"] if param_groups else 0.0,
+        )
+        return param_groups
 
     def _split_dataset(self, dataset: Dataset) -> tuple[DataLoader, DataLoader]:
         """Split dataset into train and validation DataLoaders."""
@@ -263,6 +310,7 @@ class Trainer:
         dataset: Dataset,
         forward_fn: Callable | None = None,
         model_tag: str = "model",
+        val_dataset: Dataset | None = None,
     ) -> TrainResult:
         """Train the model on a dataset.
 
@@ -273,6 +321,11 @@ class Trainer:
             forward_fn: Function that takes a batch and returns (logits, labels).
                 If None, assumes (x, y) batches with model(x).
             model_tag: String tag for checkpoint filenames.
+            val_dataset: Optional pre-split validation dataset.  When provided,
+                *dataset* is used entirely for training and *val_dataset* for
+                validation — the internal ``_split_dataset`` is skipped.  When
+                ``None`` (default), the existing behaviour of splitting
+                *dataset* according to ``val_fraction`` is preserved.
 
         Returns:
             TrainResult with training history.
@@ -285,7 +338,30 @@ class Trainer:
                 labels = labels.to(self.device)
                 return self.model(inputs), labels
 
-        train_loader, val_loader = self._split_dataset(dataset)
+        if val_dataset is not None:
+            n_train = len(dataset)  # type: ignore[arg-type]
+            _persist = self.num_workers > 0
+            train_loader = DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                drop_last=n_train > self.batch_size,
+                num_workers=self.num_workers,
+                pin_memory=self.device.type == "cuda",
+                persistent_workers=_persist,
+                prefetch_factor=2 if _persist else None,
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.batch_size * 2,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=self.device.type == "cuda",
+                persistent_workers=_persist,
+                prefetch_factor=2 if _persist else None,
+            )
+        else:
+            train_loader, val_loader = self._split_dataset(dataset)
         optimizer, scheduler = self._make_optimizer_and_scheduler(self.epochs)
 
         best_val_acc = 0.0

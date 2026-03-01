@@ -38,7 +38,7 @@ mne_data/
 # Model checkpoints & outputs
 checkpoints/
 outputs/
-runs/
+# runs/
 wandb/
 
 # Jupyter

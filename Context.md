@@ -67,7 +67,7 @@ transfer-learning-bci/
 │   └── utils/
 │       ├── config.py            # All dataclass configs + SpectrogramConfig (9-channel list)
 │       ├── logging.py           # setup_stage_logging helper
-│       ├── visualization.py     # save_fold_plots (training curves + confusion matrix)
+│       ├── visualization.py     # save_training_curves, save_confusion_matrix, save_per_subject_accuracy
 │       └── seed.py              # set_seed, get_device
 ├── tests/
 │   ├── test_phase1.py           # Unit tests for Stage 02/03 helpers (CSP+LDA, Riemannian+LDA)
@@ -192,6 +192,8 @@ Both implement `fit`, `transform`, `fit_transform` (sklearn API).
   - `as_feature_extractor=True`: replaces classification head with `nn.Identity`; outputs 192-dim feature vector.
   - `as_feature_extractor=False`: keeps classification head for standalone training (Stage 04/05).
 - `freeze_backbone(unfreeze_last_n_blocks=2)`: freezes all but the last 2 transformer blocks for transfer fine-tuning.
+- `unfreeze_all()`: sets `requires_grad = True` for every parameter (used in LP-FT Phase 2).
+- `get_layerwise_param_groups()`: returns `[(name, params)]` tuples ordered shallow→deep for layer-wise LR decay: `patch_embed → pos_embed → cls_token → block_0..11 → norm → head`.
 - `ModelConfig.in_chans = 9` is the canonical default.
 
 ### MathBranch (`math_branch.py`)
@@ -220,11 +222,14 @@ Three strategies:
 
 ### Trainer (`trainer.py`)
 - AdamW optimizer with optional differential LR for backbone (`backbone_lr_scale=0.1`).
+- **Layer-wise LR decay** (`layer_lr_decay`): assigns exponentially decreasing LR to earlier ViT layers. Uses `model.get_layerwise_param_groups()` for depth ordering. `lr_i = base_lr * decay^(N-1-i)`.
 - Cosine annealing LR with linear warm-up (`warmup_epochs`).
 - Label smoothing cross-entropy loss.
 - Validation split (`val_fraction=0.2`) drawn from training data for early stopping.
 - Best model checkpoint saved in memory; restored after training.
-- `fit(dataset, forward_fn, model_tag)` → `TrainResult` with `.history`, `.best_epoch`.
+- `fit(dataset, forward_fn, model_tag, val_dataset)` → `TrainResult` with `.history`, `.best_epoch`.
+  - When `val_dataset` is provided, uses it directly for validation and skips the internal `_split_dataset()` call. This prevents the double-split bug where a caller pre-splits data but the Trainer splits again internally.
+  - When `val_dataset` is `None` (default), splits `dataset` internally using `val_fraction`. Fully backward compatible.
 - `predict(dataloader, forward_fn)` → `(y_pred, y_prob)`.
 
 ### Cross-Validation (`cross_validation.py`)
@@ -274,7 +279,24 @@ Same CV structure as Stage 02, but uses Riemannian tangent-space features (OAS c
 
 Loads PhysioNet spectrograms (N, 9, 224, 224), normalises with per-channel stats, trains ViT-Tiny (`in_chans=9`) from ImageNet init as a binary classifier. Saves only `model.backbone.state_dict()` (the patch embed + transformer blocks, no classification head).
 
-**Exported function**: `pretrain_vit(subject_data, channel_names, sfreq, spec_config, ...)` → metrics dict with `"val_accuracy"`. Builds CWT spectrograms on-the-fly from raw EEG (used in tests; production `main()` uses cached spectrograms).
+**Training strategy — LP-FT (default, `--lp-epochs > 0`):**
+Uses the two-phase LP-FT strategy (Kumar et al., ICLR 2022) with layer-wise LR decay (BEiT / Bao et al.):
+1. **Phase 1 — Linear Probe (LP):** Freeze the entire backbone, train only the new classification head for `--lp-epochs` (default 5) at `--lp-lr` (default 1e-3) with no weight decay. This aligns the randomly-initialised head with pretrained features without distorting them.
+2. **Phase 2 — Fine-Tune (FT):** Unfreeze all layers, fine-tune with layer-wise LR decay (`--layer-lr-decay`, default 0.65) for `--ft-epochs` (default 45) at `--ft-lr` (default 3e-5) with `--ft-weight-decay` (default 0.05). Earlier layers (patch embed, early transformer blocks) get exponentially smaller LR to preserve useful ImageNet attention patterns.
+
+Layer-wise LR decay is implemented in `Trainer._build_layerwise_param_groups()` which queries `ViTBranch.get_layerwise_param_groups()` for the depth-ordered parameter groups: `patch_embed → pos_embed → cls_token → block_0 → ... → block_11 → norm → head`. Each group gets `lr = base_lr * decay^(N-1-i)`.
+
+Legacy single-phase training is still available with `--lp-epochs 0` (falls back to uniform LR at `--lr`).
+
+The `main()` function uses a **lazy-loading** strategy to stay well within 16 GB RAM:
+1. Scan `.npz` files for trial counts and labels only (cheap — only `y` arrays loaded, ~20 KB total).
+2. Build a global index: `trial_map[global_idx] = (file_idx, local_trial_idx)` mapping each trial to its source `.npz` file and position.
+3. `_LazySpectrogramDataset` reads per-subject `.npz` files **on demand** in `__getitem__`, normalising each subject's spectrograms when first loaded.
+4. An **LRU cache** (default 8 subjects) keeps recently accessed subjects in memory so consecutive samples from the same subject don't trigger repeated disk reads. Each subject is ~20 MB, so 8 × 20 MB = ~160 MB cache.
+5. Peak RAM ≈ model (~22 MB) + LRU cache (~160 MB) + batch tensors (~55 MB) + Python overhead ≈ **~500 MB** total (vs. the old 8.9 GB monolithic array that caused OOM kills on 16 GB machines).
+6. External 85/15 train/val split. The pre-split `val_ds` is passed to `Trainer.fit(val_dataset=val_ds)` so the Trainer skips its internal `_split_dataset()`. This ensures early stopping and final metrics use the **same** validation set, and training uses the full 85% (not 68% from a double split).
+
+**Exported function**: `pretrain_vit(subject_data, channel_names, sfreq, spec_config, ...)` → metrics dict with `"val_accuracy"`. Builds CWT spectrograms on-the-fly from raw EEG (used in tests; production `main()` uses cached spectrograms). Supports LP-FT via optional `lp_epochs` parameter (default 0 = legacy mode for backward compatibility with tests). Also passes the external val split to `Trainer.fit(val_dataset=...)` to avoid double splitting.
 
 ---
 
@@ -385,6 +407,43 @@ All pipeline-relevant defaults live here as Python dataclasses:
 - `SpectrogramConfig`: 9 spectrogram channels, 8–32 Hz, 224×224, Morlet, multichannel mode.
 - `ModelConfig`: `in_chans=9`, `vit_tiny_patch16_224`, attention fusion, 6 CSP components.
 - `PreprocessingConfig`: 128 Hz resample, 0.5–3.5 s epoch crop, z-score normalisation.
+
+---
+
+## Visualization & Plot Output (`src/bci/utils/visualization.py`)
+
+Three focused plotting functions, used by Stages 04–07 for summary-level plots (no per-fold plots):
+
+### `save_training_curves(history, best_epoch, best_val_accuracy, plots_dir, filename, title)`
+- Dual-panel figure: train/val loss (left), train/val accuracy (right).
+- Marks the best epoch with a dashed vertical line and annotation.
+- Used by Stage 04 (`save_pretrain_plot` delegates here).
+
+### `save_confusion_matrix(y_true, y_pred, plots_dir, filename, title, class_labels)`
+- Single heatmap with `figsize=(5, 4)`, `annot_kws={"size": 14}`, and cell divider gridlines.
+- Fixes the old clipped-row bug (was `figsize=(4, 3)`).
+- Used by Stages 05 and 06 for aggregate confusion matrices (concatenated across all folds).
+
+### `save_per_subject_accuracy(per_subject, plots_dir, filename, title)`
+- Horizontal bar chart of per-subject accuracy with a dashed mean-accuracy line.
+- Accepts `dict[str, float]` mapping subject IDs to accuracy percentages.
+- Used by Stages 05 and 06 for LOSO per-subject summaries.
+
+### Plot Titles
+All plot titles are clean and descriptive — no stage numbers. Examples:
+- `"ViT Pretraining on PhysioNet (LP-FT)"` (Stage 04)
+- `"ViT-Only Baseline (Within-Subject CV)"` (Stage 05)
+- `"Dual-Branch Attention (LOSO)"` (Stage 06)
+- `"Reduced-Data Transfer Learning Experiment"` (Stage 07)
+
+### Per-Stage Plot Outputs
+| Stage | Plot Files | Description |
+|-------|-----------|-------------|
+| 04 | `pretrain_curves.png` | LP-FT or uniform training curves |
+| 05 | `within_subject_confusion.png`, `loso_confusion.png`, `loso_per_subject.png` | Aggregate across all folds |
+| 06 | `{fusion}_within_confusion.png`, `{fusion}_loso_confusion.png`, `{fusion}_loso_per_subject.png` | Per fusion method, aggregate across folds |
+| 07 | `accuracy_vs_fraction.png` | Transfer vs scratch at 10–100% data |
+| 08 | 5 thesis figures (spectrogram examples, accuracy vs fraction, fusion ablation, heatmap, model comparison) | Publication-quality |
 
 ---
 

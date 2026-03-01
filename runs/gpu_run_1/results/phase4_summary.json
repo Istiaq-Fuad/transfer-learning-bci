@@ -1,0 +1,71 @@
+{
+  "baselines": {
+    "csp_lda": {
+      "model": "Baseline A: CSP+LDA",
+      "within_acc": 77.01418296699605,
+      "within_std": 14.244967598394142,
+      "within_kappa": 0.5403232549685472,
+      "within_f1": 0.7688077215877951,
+      "loso_acc": 60.802469135802475,
+      "loso_std": 10.836998386399493,
+      "loso_kappa": 0.2160493827160494,
+      "loso_f1": 0.5676341127171293,
+      "loso_per_subject": {
+        "1": 56.25,
+        "2": 54.166666666666664,
+        "3": 70.13888888888889,
+        "4": 68.40277777777779,
+        "5": 51.388888888888886,
+        "6": 50.34722222222222,
+        "7": 49.30555555555556,
+        "8": 83.33333333333334,
+        "9": 63.888888888888886
+      }
+    },
+    "riemannian": {
+      "model": "Baseline B: Riemannian+LDA",
+      "within_acc": 62.24238757814074,
+      "within_std": 7.757744777173352,
+      "within_kappa": 0.2446235658339392,
+      "within_f1": 0.6198692448161767,
+      "loso_acc": 62.15277777777778,
+      "loso_std": 9.147180466888535,
+      "loso_kappa": 0.24305555555555555,
+      "loso_f1": 0.5897688235140693,
+      "loso_per_subject": {
+        "1": 65.27777777777779,
+        "2": 53.47222222222222,
+        "3": 75.69444444444444,
+        "4": 59.02777777777778,
+        "5": 50.0,
+        "6": 58.68055555555556,
+        "7": 53.125,
+        "8": 76.38888888888889,
+        "9": 67.70833333333334
+      }
+    },
+    "vit_only": {
+      "model": "Baseline C: CWT+ViT-Tiny",
+      "within_acc": 51.76514082140217,
+      "within_std": 6.023790973621392,
+      "within_kappa": 0.03681663846227719,
+      "within_f1": 0.48842851832872736,
+      "loso_acc": null,
+      "loso_std": null,
+      "loso_kappa": null,
+      "loso_f1": null,
+      "loso_per_subject": {}
+    }
+  },
+  "dual_branch": {
+    "attention": null,
+    "concat": null,
+    "gated": null
+  },
+  "transfer_learning": {
+    "scratch": null,
+    "imagenet": null,
+    "transfer": null
+  },
+  "reduced_data": null
+}

@@ -1,0 +1,14 @@
+{
+  "phase": "pretrain",
+  "backbone": "vit_tiny_patch16_224",
+  "source": "real_physionet",
+  "n_subjects": 109,
+  "val_accuracy": 49.796472184531886,
+  "val_kappa": -0.00642184904964016,
+  "val_f1": 0.49669619785898855,
+  "n_source_trials": 4918,
+  "n_train": 4181,
+  "n_val": 737,
+  "elapsed_s": 842.2,
+  "checkpoint": "runs/gpu_run/checkpoints/vit_pretrained_physionet_vit.pt"
+}

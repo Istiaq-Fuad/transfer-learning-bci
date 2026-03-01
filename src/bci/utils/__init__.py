@@ -16,7 +16,11 @@ from bci.utils.config import (
 )
 from bci.utils.logging import setup_stage_logging
 from bci.utils.seed import set_seed
-from bci.utils.visualization import save_fold_plots
+from bci.utils.visualization import (
+    save_confusion_matrix,
+    save_per_subject_accuracy,
+    save_training_curves,
+)
 
 __all__ = [
     # config constants
@@ -38,5 +42,7 @@ __all__ = [
     # seed
     "set_seed",
     # visualization
-    "save_fold_plots",
+    "save_confusion_matrix",
+    "save_per_subject_accuracy",
+    "save_training_curves",
 ]

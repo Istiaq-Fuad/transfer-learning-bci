@@ -109,15 +109,26 @@ class ViTBranch(nn.Module):
         as_feature_extractor: If True, removes the classification head and
             returns the raw feature vector. If False, attaches a new head
             for `n_classes` classification.
+        img_size: Override the spatial input resolution passed to timm
+            (e.g. 64 for 64×64 inputs instead of the default 224×224).
+            When set, timm interpolates the pretrained positional embeddings
+            automatically so ImageNet-pretrained weights remain usable.
+            None means use the model's default (typically 224).
     """
 
     def __init__(
         self,
         config: ModelConfig | None = None,
         as_feature_extractor: bool = True,
+        img_size: int | None = None,
     ) -> None:
         super().__init__()
         self.config = config or ModelConfig()
+
+        # Build extra kwargs for timm (only pass img_size when explicitly set)
+        extra_kwargs: dict = {}
+        if img_size is not None:
+            extra_kwargs["img_size"] = img_size
 
         # Load backbone from timm
         self.backbone = timm.create_model(
@@ -125,6 +136,7 @@ class ViTBranch(nn.Module):
             pretrained=self.config.vit_pretrained,
             drop_rate=self.config.vit_drop_rate,
             in_chans=self.config.in_chans,
+            **extra_kwargs,
         )
 
         # Detect the classification head attribute and feature dimension
@@ -186,28 +198,29 @@ class ViTBranch(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # Unfreeze the last N blocks
-        blocks = _get_block_list(self.backbone)
-        if blocks:
-            for block in blocks[-unfreeze_last_n_blocks:]:
-                for param in block.parameters():
+        # Unfreeze the last N blocks (guard against N=0: [-0:] == [:] in Python)
+        if unfreeze_last_n_blocks > 0:
+            blocks = _get_block_list(self.backbone)
+            if blocks:
+                for block in blocks[-unfreeze_last_n_blocks:]:
+                    for param in block.parameters():
+                        param.requires_grad = True
+            else:
+                logger.warning(
+                    "freeze_backbone: could not find block list for '%s'; "
+                    "only the head will be unfrozen.",
+                    self.config.vit_model_name,
+                )
+
+            # ViT-specific: unfreeze the final layer norm when unfreezing blocks
+            if hasattr(self.backbone, "norm"):
+                for param in self.backbone.norm.parameters():
                     param.requires_grad = True
-        else:
-            logger.warning(
-                "freeze_backbone: could not find block list for '%s'; "
-                "only the head will be unfrozen.",
-                self.config.vit_model_name,
-            )
 
         # Always unfreeze the classification head
         head = getattr(self.backbone, self._head_attr, None)
         if head is not None:
             for param in head.parameters():
-                param.requires_grad = True
-
-        # ViT-specific: unfreeze the final layer norm
-        if hasattr(self.backbone, "norm"):
-            for param in self.backbone.norm.parameters():
                 param.requires_grad = True
 
         frozen = sum(1 for p in self.backbone.parameters() if not p.requires_grad)
@@ -231,6 +244,63 @@ class ViTBranch(nn.Module):
         if head is None:
             return []
         return list(head.parameters())
+
+    def get_layerwise_param_groups(self) -> list[tuple[str, list[nn.Parameter]]]:
+        """Return parameter groups ordered by depth for layer-wise LR decay.
+
+        Returns a list of ``(group_name, params)`` tuples ordered from the
+        shallowest (patch embedding) to the deepest (classification head)::
+
+            [("patch_embed", [...]),
+             ("pos_embed", [...]),
+             ("cls_token", [...]),
+             ("block_0", [...]),
+             ...,
+             ("block_N", [...]),
+             ("norm", [...]),
+             ("head", [...])]
+
+        This ordering lets callers assign exponentially decaying learning
+        rates so that earlier layers change less during fine-tuning.
+        """
+        groups: list[tuple[str, list[nn.Parameter]]] = []
+
+        # Patch embedding (shallowest)
+        if hasattr(self.backbone, "patch_embed"):
+            groups.append(("patch_embed", list(self.backbone.patch_embed.parameters())))
+
+        # Positional embedding (learnable, single param)
+        if hasattr(self.backbone, "pos_embed") and isinstance(
+            self.backbone.pos_embed, nn.Parameter
+        ):
+            groups.append(("pos_embed", [self.backbone.pos_embed]))
+
+        # CLS token (learnable, single param)
+        if hasattr(self.backbone, "cls_token") and isinstance(
+            self.backbone.cls_token, nn.Parameter
+        ):
+            groups.append(("cls_token", [self.backbone.cls_token]))
+
+        # Transformer blocks (ascending depth)
+        blocks = _get_block_list(self.backbone)
+        for i, block in enumerate(blocks):
+            groups.append((f"block_{i}", list(block.parameters())))
+
+        # Final layer norm
+        if hasattr(self.backbone, "norm"):
+            groups.append(("norm", list(self.backbone.norm.parameters())))
+
+        # Classification head (deepest — gets highest LR)
+        head = getattr(self.backbone, self._head_attr, None)
+        if head is not None:
+            groups.append(("head", list(head.parameters())))
+
+        return groups
+
+    def unfreeze_all(self) -> None:
+        """Set ``requires_grad = True`` for every parameter."""
+        for param in self.backbone.parameters():
+            param.requires_grad = True
 
     def get_num_params(self, trainable_only: bool = True) -> int:
         """Count model parameters.

@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 from bci.utils.logging import setup_stage_logging
-from bci.utils.visualization import save_fold_plots
+from bci.utils.visualization import save_confusion_matrix, save_per_subject_accuracy
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,6 +85,9 @@ def run_vit_cv(
 
     MODEL_NAME = "CWT+ViT-Tiny (PhysioNet pretrained)"
     BACKBONE = "vit_tiny_patch16_224"
+    # Resize to 64×64: ViT-Tiny patch16 at 64×64 = 16 patches vs 196 at 224×224.
+    # Must match the img_size used in Stage 04 pretraining.
+    TARGET_IMG_SIZE = 64
 
     tag_base = "real_baseline_c_vit"
     if strategy == "loso":
@@ -106,7 +109,7 @@ def run_vit_cv(
             in_chans=9,
             n_classes=2,
         )
-        model = ViTBranch(config=cfg, as_feature_extractor=False)
+        model = ViTBranch(config=cfg, as_feature_extractor=False, img_size=TARGET_IMG_SIZE)
         if checkpoint_path.exists():
             ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
             # Strip head keys to load only backbone weights
@@ -122,6 +125,14 @@ def run_vit_cv(
         return model
 
     def make_ds(imgs, y):
+        # Resize from on-disk 224×224 to TARGET_IMG_SIZE×TARGET_IMG_SIZE.
+        # Reduces ViT forward-pass cost by ~12× with minimal accuracy impact.
+        if imgs.shape[-1] != TARGET_IMG_SIZE:
+            t = torch.from_numpy(imgs.astype(np.float32))
+            t = torch.nn.functional.interpolate(
+                t, size=(TARGET_IMG_SIZE, TARGET_IMG_SIZE), mode="bilinear", align_corners=False
+            )
+            imgs = t.numpy()
         # Normalise per-channel using training-set stats
         imgs_norm = (imgs - spec_mean[None, :, None, None]) / spec_std[None, :, None, None]
         return TensorDataset(
@@ -192,11 +203,6 @@ def run_vit_cv(
                     fr.kappa,
                 )
                 all_folds.append(fr)
-                tag = f"S{sid:02d}_fold{fold_counter:03d}"
-                try:
-                    save_fold_plots(train_result, y[test_idx], y_pred, plots_dir, tag)
-                except Exception as e:
-                    log.warning("Plot save failed for %s: %s", tag, e)
                 fold_counter += 1
 
     else:  # loso
@@ -258,11 +264,6 @@ def run_vit_cv(
                 fr.kappa,
             )
             all_folds.append(fr)
-            tag = f"S{test_sid:02d}_loso_fold{fold_idx:03d}"
-            try:
-                save_fold_plots(train_result, test_y, y_pred, plots_dir, tag)
-            except Exception as e:
-                log.warning("Plot save failed for %s: %s", tag, e)
 
     elapsed = time.time() - t0
     result = CVResult(strategy=strategy, model_name=MODEL_NAME, folds=all_folds)
@@ -274,41 +275,31 @@ def run_vit_cv(
         result.std_accuracy,
     )
 
-    # Per-subject summary bar plot (within-subject only)
+    # ── Summary plots ──────────────────────────────────────────────────────
+    strategy_label = "Within-Subject CV" if strategy == "within_subject" else "LOSO CV"
+    try:
+        import numpy as _np
+
+        agg_y_true = _np.concatenate([f.y_true for f in all_folds])
+        agg_y_pred = _np.concatenate([f.y_pred for f in all_folds])
+        save_confusion_matrix(
+            agg_y_true,
+            agg_y_pred,
+            plots_dir,
+            filename="confusion_matrix",
+            title=f"ViT-Only Baseline ({strategy_label})",
+        )
+    except Exception as e:
+        log.warning("Confusion matrix plot failed: %s", e)
+
     if strategy == "within_subject":
         try:
-            import matplotlib
-
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-
-            per_subj = result.per_subject_accuracy
-            sids = sorted(per_subj.keys())
-            accs = [per_subj[s] for s in sids]
-            mean_a = sum(accs) / len(accs)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            colors = sns.color_palette("viridis", n_colors=len(sids))
-            bars = ax.bar([f"S{s}" for s in sids], accs, color=colors)
-            ax.axhline(y=mean_a, color="red", linestyle="--", label=f"Mean: {mean_a:.1f}%")
-            for bar, acc in zip(bars, accs):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2.0,
-                    bar.get_height() + 0.5,
-                    f"{acc:.1f}",
-                    ha="center",
-                    fontsize=9,
-                )
-            ax.set_xlabel("Subject")
-            ax.set_ylabel("Accuracy (%)")
-            ax.set_title(f"Stage 05 – {MODEL_NAME} per-subject accuracy")
-            ax.set_ylim(0, 105)
-            ax.legend()
-            ax.grid(True, alpha=0.3, axis="y")
-            plt.tight_layout()
-            plots_dir.mkdir(parents=True, exist_ok=True)
-            fig.savefig(plots_dir / "per_subject_accuracy.png", dpi=120, bbox_inches="tight")
-            plt.close(fig)
+            save_per_subject_accuracy(
+                result.per_subject_accuracy,
+                plots_dir,
+                filename="per_subject_accuracy",
+                title=f"ViT-Only Baseline \u2013 Per-Subject Accuracy ({strategy_label})",
+            )
         except Exception as e:
             log.warning("Per-subject plot failed: %s", e)
 

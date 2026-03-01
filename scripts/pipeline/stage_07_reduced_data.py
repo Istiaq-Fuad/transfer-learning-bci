@@ -243,7 +243,7 @@ def save_fraction_summary_plot(
     ax.axhline(50, color="gray", linestyle="--", linewidth=1, alpha=0.7, label="Chance (50%)")
     ax.set_xlabel("Training Data Used (%)")
     ax.set_ylabel("Accuracy (%)")
-    ax.set_title(f"Stage 07 – Reduced-data experiment ({backbone})")
+    ax.set_title("Reduced-Data Transfer Learning Experiment")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -296,6 +296,8 @@ def main() -> None:
     _device = torch.device(device)
     fused_dim = _FUSED_DIM.get(backbone, 256)
     cls_hidden = _CLASSIFIER_HIDDEN.get(backbone, 128)
+    # Must match Stage 04 pretraining resolution (64×64 = 16 patches, ~12× faster)
+    TARGET_IMG_SIZE = 64
 
     # ── Load epoch cache ───────────────────────────────────────────────────
     log.info("Loading BCI IV-2a epoch cache...")
@@ -342,6 +344,13 @@ def main() -> None:
     )
 
     def normalise_specs(imgs: np.ndarray) -> np.ndarray:
+        # Resize from on-disk 224×224 to TARGET_IMG_SIZE×TARGET_IMG_SIZE
+        if imgs.shape[-1] != TARGET_IMG_SIZE:
+            t = torch.from_numpy(imgs.astype(np.float32))
+            t = torch.nn.functional.interpolate(
+                t, size=(TARGET_IMG_SIZE, TARGET_IMG_SIZE), mode="bilinear", align_corners=False
+            )
+            imgs = t.numpy()
         return (imgs - spec_mean[None, :, None, None]) / spec_std[None, :, None, None]
 
     def build_model(condition: str, math_input_dim: int) -> DualBranchModel:
@@ -359,7 +368,7 @@ def main() -> None:
             classifier_hidden_dim=cls_hidden,
             n_classes=2,
         )
-        model = DualBranchModel(math_input_dim=math_input_dim, config=cfg)
+        model = DualBranchModel(math_input_dim=math_input_dim, config=cfg, img_size=TARGET_IMG_SIZE)
         if condition == "transfer":
             if checkpoint_path.exists():
                 ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)

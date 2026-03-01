@@ -76,6 +76,7 @@ class DualBranchModel(nn.Module):
         self,
         math_input_dim: int,
         config: ModelConfig | None = None,
+        img_size: int | None = None,
     ) -> None:
         super().__init__()
         self.config = config or ModelConfig()
@@ -84,6 +85,7 @@ class DualBranchModel(nn.Module):
         self.vit_branch = ViTBranch(
             config=self.config,
             as_feature_extractor=True,
+            img_size=img_size,
         )
 
         # Branch B: MLP for handcrafted features

@@ -1,0 +1,76 @@
+{
+  "backbone": "vit_tiny_patch16_224",
+  "fractions": [
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+  ],
+  "results": {
+    "scratch": {
+      "0.10": {
+        "fraction_pct": 10,
+        "mean_accuracy": 50.4876,
+        "std_accuracy": 4.1446,
+        "n_runs": 135
+      },
+      "0.25": {
+        "fraction_pct": 25,
+        "mean_accuracy": 50.4257,
+        "std_accuracy": 3.6599,
+        "n_runs": 135
+      },
+      "0.50": {
+        "fraction_pct": 50,
+        "mean_accuracy": 52.3667,
+        "std_accuracy": 6.5488,
+        "n_runs": 135
+      },
+      "0.75": {
+        "fraction_pct": 75,
+        "mean_accuracy": 66.6595,
+        "std_accuracy": 16.7653,
+        "n_runs": 135
+      },
+      "1.00": {
+        "fraction_pct": 100,
+        "mean_accuracy": 71.8657,
+        "std_accuracy": 16.5728,
+        "n_runs": 135
+      }
+    },
+    "transfer": {
+      "0.10": {
+        "fraction_pct": 10,
+        "mean_accuracy": 50.6796,
+        "std_accuracy": 4.7611,
+        "n_runs": 135
+      },
+      "0.25": {
+        "fraction_pct": 25,
+        "mean_accuracy": 51.3627,
+        "std_accuracy": 4.9808,
+        "n_runs": 135
+      },
+      "0.50": {
+        "fraction_pct": 50,
+        "mean_accuracy": 58.3511,
+        "std_accuracy": 14.1716,
+        "n_runs": 135
+      },
+      "0.75": {
+        "fraction_pct": 75,
+        "mean_accuracy": 72.0425,
+        "std_accuracy": 15.9479,
+        "n_runs": 135
+      },
+      "1.00": {
+        "fraction_pct": 100,
+        "mean_accuracy": 74.6008,
+        "std_accuracy": 15.885,
+        "n_runs": 135
+      }
+    }
+  }
+}
