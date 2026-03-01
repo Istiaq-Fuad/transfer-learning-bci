@@ -10,13 +10,13 @@ Thesis project: **Transfer Learning Based Motor Imagery EEG Classification with 
 
 The project classifies **left vs. right hand Motor Imagery** EEG signals using a dual-branch deep learning model:
 
-- **Branch A (ViT):** Converts EEG epochs into CWT Morlet spectrograms (C3→Red, Cz→Green, C4→Blue, 224×224) and processes them with a pretrained ViT-Tiny, producing a 192-dim feature vector.
-- **Branch B (Math):** Extracts 6 CSP spatial filter components and 253 Riemannian tangent-space features (259-dim total), projects through an MLP to a 128-dim vector.
+- **Branch A (ViT):** Converts EEG epochs into **9-channel** CWT Morlet spectrograms (C3, C1, Cz, C2, C4, FC3, FC4, CP3, CP4; 224×224) and processes them with a pretrained ViT-Tiny, producing a 192-dim feature vector.
+- **Branch B (Math):** Extracts 6 CSP spatial filter components and Riemannian tangent-space features, projects through an MLP to a 128-dim vector.
 - **Fusion:** An attention mechanism combines both branches into a 128-dim vector.
 - **Classifier:** MLP 128→64→2 with softmax → Left / Right.
 - **Total parameters:** ~5.71M (dominated by ViT-Tiny ~5.5M).
 
-The core thesis experiment is **reduced-data transfer learning**: the ViT is first pretrained on a large EEG source corpus (PhysioNet MMIDB, 109 subjects), then fine-tuned on the small BCI IV-2a target dataset. Accuracy at each training data fraction (10%, 25%, 50%, 75%, 100%) is compared between scratch training vs. EEG-pretrained ViT.
+The core thesis experiment is **reduced-data transfer learning**: the ViT is first pretrained on a large EEG source corpus (PhysioNet MMIDB, 109 subjects), then fine-tuned on the small BCI IV-2a target dataset. Accuracy is reported at each training data fraction (10%, 25%, 50%, 75%, 100%) for the **transfer dual-branch** model.
 
 ```
 Input EEG epoch (n_trials, 22, 512)
@@ -25,14 +25,14 @@ Input EEG epoch (n_trials, 22, 512)
          │                                        │
     Branch A: ViT                          Branch B: Math
     ─────────────────                      ─────────────────
-    CWT Morlet (4–40 Hz)                   CSP (6 components)
-    C3→R, Cz→G, C4→B                      + Riemannian tangent
-    → (n_trials, 3, 224, 224)               space (253-dim)
-    → ViT-Tiny (timm)                      → concat → 259-dim
-      ImageNet pretrained                  → MLP(259→256→128)
-    → 192-dim                              → 128-dim
-         │                                        │
-         └──────────────┬─────────────────────────┘
+    CWT Morlet (8–32 Hz)                   CSP (6 components)
+    9-channel spectrograms                + Riemannian tangent
+    → (n_trials, 9, 224, 224)               space (dim depends on channels)
+    → ViT-Tiny (timm)                      → concat → MLP(…→128)
+      ImageNet pretrained                  → 128-dim
+    → 192-dim                              │
+         │                                 │
+         └──────────────┬──────────────────┘
                         │
                AttentionFusion(192, 128)
                         │
@@ -69,13 +69,12 @@ Input EEG epoch (n_trials, 22, 512)
 ## Project Structure
 
 ```
-bci_code/
+transfer-learning-bci/
 ├── src/bci/                        ← installable library (use `from bci.x import y`)
 │   ├── data/
 │   │   ├── download.py             ← MOABB dataset download + loading
-│   │   ├── preprocessing.py        ← EEG filtering, ICA, epoching
-│   │   ├── transforms.py           ← CWT Morlet spectrogram generation (pywt + PIL)
-│   │   ├── dataset.py              ← PyTorch Dataset classes
+│   │   ├── preprocessing.py        ← EEG filtering, epoching
+│   │   ├── transforms.py           ← CWT Morlet spectrogram generation
 │   │   └── dual_branch_builder.py  ← Per-fold CSP+Riemannian fit; no data leakage
 │   ├── features/
 │   │   ├── csp.py                  ← CSP spatial filter (MNE, sklearn API)
@@ -88,29 +87,36 @@ bci_code/
 │   ├── training/
 │   │   ├── trainer.py              ← AdamW + cosine LR schedule + early stopping
 │   │   ├── cross_validation.py     ← within_subject_cv, loso_cv, synthetic data generator
-│   │   └── evaluation.py           ← accuracy, kappa, F1, AUC metrics
+│   │   ├── evaluation.py           ← accuracy, kappa, F1, AUC metrics
+│   │   └── splits.py               ← reproducible CV splits
 │   └── utils/
 │       ├── config.py               ← Dataclass configs (ModelConfig, TrainingConfig, …)
 │       ├── seed.py                 ← set_seed(), get_device()
+│       ├── results_index.py        ← results index + manifest helpers
 │       └── visualization.py        ← Matplotlib helpers
 │
-├── scripts/                        ← Runnable experiment scripts
-│   ├── baseline_a_csp_lda.py       ← Phase 1: CSP + LDA
-│   ├── baseline_b_riemannian.py    ← Phase 1: Riemannian + LDA
-│   ├── baseline_c_vit.py           ← Phase 1: ViT-only (no math branch)
-│   ├── train_dual_branch.py        ← Phase 2: Full dual-branch training
-│   ├── pretrain_physionet.py       ← Phase 3 Step 1: Pretrain ViT on source data
-│   ├── finetune_bci_iv2a.py        ← Phase 3 Step 2: Compare scratch/imagenet/transfer
-│   ├── reduced_data_experiment.py  ← Phase 3 Step 3: Accuracy vs data fraction (core thesis)
-│   ├── phase4_compile_results.py   ← Phase 4 Step 1: Compile all JSONs into summary table
-│   ├── phase4_visualize.py         ← Phase 4 Step 2: Generate thesis figures
-│   ├── phase4_stats.py             ← Phase 4 Step 3: Wilcoxon, t-test, Cohen's d
-│   └── smoke_test.py               ← Quick sanity check (no pytest needed)
+├── scripts/
+│   ├── run_all.sh                  ← Orchestrator (all steps)
+│   ├── run_full_experiment.py      ← Orchestrator (python)
+│   ├── smoke_test.py               ← Quick sanity check
+│   └── pipeline/
+│       ├── stage_01_download.py
+│       ├── stage_02_baseline_a.py
+│       ├── stage_03_baseline_b.py
+│       ├── stage_04_pretrain_vit.py
+│       ├── stage_05_vit_baseline.py
+│       ├── stage_06_dual_branch.py
+│       ├── stage_07_reduced_data.py
+│       └── stage_08_results.py
 │
 ├── tests/
-│   ├── test_phase1.py              ← 18 tests (CSP, Riemannian, LDA baselines, CV)
-│   ├── test_phase2.py              ← 17 tests (dual-branch model, fusion, trainer)
-│   └── test_phase3.py              ← 14 tests (pretrain, transfer, reduced-data)
+│   ├── test_baselines.py
+│   ├── test_cv.py
+│   ├── test_dual_branch_builder.py
+│   ├── test_features.py
+│   ├── test_trainer_eval.py
+│   ├── test_transfer_and_reduced.py
+│   └── test_vit_pretrain.py
 │
 ├── results/                        ← JSON output from experiment scripts
 │   ├── real_baseline_a_csp_lda.json      ← REAL: CSP+LDA     (79.32% within, 65.78% LOSO)
@@ -158,198 +164,50 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 ## Running the Experiments
 
-All scripts accept `--data synthetic` (fast, no download, uses generated data) and `--data real` (BCI IV-2a, downloads automatically on first use to `~/mne_data/`).
+Use the pipeline scripts under `scripts/pipeline/`. The stage number is part of the filename only.
 
----
-
-### Phase 1 — Baselines
-
-These three baselines establish the performance ceiling for classical methods and motivate the dual-branch approach.
-
-#### Baseline A: CSP + LDA
-
-Common Spatial Patterns (6 components, Ledoit-Wolf regularization) extracts discriminative spatial filters. Linear Discriminant Analysis classifies the log-band-power features. Evaluated with 5-fold within-subject CV and Leave-One-Subject-Out (LOSO) CV.
+### Download + cache
 
 ```bash
-uv run python scripts/baseline_a_csp_lda.py \
-    --data real \
-    --n-folds 5 \
-    --output results/real_baseline_a_csp_lda.json
+uv run python scripts/pipeline/stage_01_download.py
 ```
 
-**Result (already run):** Within-subject 79.32% ± 12.53% (κ=0.586), LOSO 65.78% ± 10.84% (κ=0.316)
-
-#### Baseline B: Riemannian + LDA
-
-Covariance matrices of EEG trials are mapped to the Riemannian tangent space (253-dim feature vector for 22 channels). LDA classifies the projected features. This is a strong classical baseline that works well with small datasets.
+### Baselines (CSP + LDA, Riemannian + LDA)
 
 ```bash
-uv run python scripts/baseline_b_riemannian.py \
-    --data real \
-    --n-folds 5 \
-    --output results/real_baseline_b_riemannian.json
+uv run python scripts/pipeline/stage_02_baseline_a.py --run-dir runs/my_run
+uv run python scripts/pipeline/stage_03_baseline_b.py --run-dir runs/my_run
 ```
 
-**Result (already run):** Within-subject 61.65% ± 9.41% (κ=0.233), LOSO 63.85% ± 11.14% (κ=0.277)
-
-#### Baseline C: CWT + ViT-Tiny (no math branch)
-
-EEG epochs are converted to CWT Morlet spectrograms and fed to ViT-Tiny standalone (no math branch). This isolates the ViT's contribution and is expected to perform near chance with this small dataset — motivating the dual-branch fusion. Slow on CPU (~60–90 min).
+### Pretrain ViT on PhysioNet
 
 ```bash
-uv run python scripts/baseline_c_vit.py \
-    --data real \
-    --n-folds 5 \
-    --epochs 50 \
-    --output results/real_baseline_c_vit.json
+uv run python scripts/pipeline/stage_04_pretrain_vit.py --run-dir runs/my_run
 ```
 
-**Result (already run):** Within-subject 52.58% ± 8.10% (κ=0.052) — near chance, as expected.
-
----
-
-### Phase 2 — Dual-Branch Model + Fusion Ablation
-
-The full model trains both branches jointly. Three fusion variants are evaluated as an ablation study. Each run takes ~2–4h on CPU or ~30–60 min on GPU per fusion type.
+### ViT-only transfer baseline on BCI IV-2a
 
 ```bash
-# Run all three fusion variants (within-subject, 5-fold CV)
-for FUSION in attention concat gated; do
-    uv run python scripts/train_dual_branch.py \
-        --data real \
-        --strategy within_subject \
-        --n-folds 5 \
-        --epochs 50 \
-        --fusion $FUSION \
-        --output results/real_dual_branch_${FUSION}.json
-done
-
-# LOSO cross-subject evaluation (attention fusion only)
-uv run python scripts/train_dual_branch.py \
-    --data real \
-    --strategy loso \
-    --epochs 50 \
-    --fusion attention \
-    --output results/real_dual_branch_attention_loso.json
+uv run python scripts/pipeline/stage_05_vit_baseline.py --run-dir runs/my_run
 ```
 
-Output per run: `mean_accuracy`, `std_accuracy`, `mean_kappa`, `mean_f1`, `per_subject` accuracy breakdown.
-
----
-
-### Phase 3 — Transfer Learning (Core Thesis)
-
-Three steps: pretrain ViT on source data → fine-tune on target data under three conditions → test how accuracy degrades as training data is reduced.
-
-#### Step 1 — Pretrain ViT on source data
-
-Trains the ViT branch as a standalone classifier on the EEG source corpus. Only the ViT weights are saved; they are later loaded into the full dual-branch model. Using `--data synthetic` generates a 20-subject population without any download.
+### Dual-branch training + fusion ablation
 
 ```bash
-uv run python scripts/pretrain_physionet.py \
-    --data synthetic \
-    --n-subjects 20 \
-    --epochs 50 \
-    --no-pretrained \
-    --checkpoint checkpoints/vit_pretrained_eeg.pt \
-    --output results/real_pretrain_eeg.json
+uv run python scripts/pipeline/stage_06_dual_branch.py --run-dir runs/my_run
 ```
 
-To pretrain on real PhysioNet data (109 subjects, requires download):
-```bash
-uv run python scripts/pretrain_physionet.py \
-    --data real \
-    --epochs 50 \
-    --no-pretrained \
-    --checkpoint checkpoints/vit_pretrained_physionet_real.pt \
-    --output results/real_pretrain_physionet.json
-```
-
-#### Step 2 — Compare initialization conditions on BCI IV-2a
-
-Trains the full dual-branch model three ways and compares them directly:
-
-- `scratch` — ViT initialized from random weights
-- `imagenet` — ViT initialized from ImageNet pretrained weights (default timm behavior)
-- `transfer` — ViT initialized from the EEG-pretrained checkpoint (Step 1 output)
+### Reduced-data transfer (dual-branch only)
 
 ```bash
-uv run python scripts/finetune_bci_iv2a.py \
-    --data real \
-    --checkpoint checkpoints/vit_pretrained_eeg.pt \
-    --conditions scratch imagenet transfer \
-    --n-folds 5 \
-    --epochs 50 \
-    --output-dir results/
-# Writes: results/real_finetune_scratch.json
-#         results/real_finetune_imagenet.json
-#         results/real_finetune_transfer.json
+uv run python scripts/pipeline/stage_07_reduced_data.py --run-dir runs/my_run
 ```
 
-#### Step 3 — Reduced-data experiment (core thesis result)
-
-For each training-set fraction, trains both scratch and transfer conditions across multiple folds and random seeds. This produces the key figure showing accuracy vs. available training data.
+### Results, stats, and figures
 
 ```bash
-uv run python scripts/reduced_data_experiment.py \
-    --data real \
-    --checkpoint checkpoints/vit_pretrained_eeg.pt \
-    --conditions scratch transfer \
-    --fractions 0.10 0.25 0.50 0.75 1.00 \
-    --n-folds 5 \
-    --n-repeats 3 \
-    --epochs 50 \
-    --output results/real_reduced_data_results.json
+uv run python scripts/pipeline/stage_08_results.py --run-dir runs/my_run
 ```
-
-Output: accuracy mean ± std at each fraction for both conditions. The `transfer` condition should maintain higher accuracy than `scratch` at low data fractions.
-
----
-
-### Phase 4 — Analysis and Figures
-
-Run these after all GPU experiments are complete.
-
-#### Step 1 — Compile all results into a unified table
-
-Reads all JSON result files with the `real_` prefix and builds `phase4_summary.json`, which all downstream scripts consume.
-
-```bash
-uv run python scripts/phase4_compile_results.py \
-    --results-dir results/ \
-    --prefix real_ \
-    --output results/phase4_summary.json
-```
-
-Prints a formatted table to stdout showing within-subject accuracy, LOSO accuracy, kappa, F1, and per-subject breakdowns.
-
-#### Step 2 — Generate all thesis figures
-
-```bash
-uv run python scripts/phase4_visualize.py \
-    --summary results/phase4_summary.json \
-    --data real \
-    --output-dir figures/
-```
-
-Outputs five figures:
-- `figures/fig1_cwt_spectrograms.png` — example CWT spectrograms for left vs. right hand
-- `figures/fig2_reduced_data_curves.png` — accuracy vs. training fraction (scratch vs. transfer)
-- `figures/fig3_fusion_ablation.png` — bar chart of attention vs. concat vs. gated fusion
-- `figures/fig4_per_subject_heatmap.png` — per-subject accuracy heatmap across all models
-- `figures/fig5_baseline_comparison.png` — all models compared on within-subject accuracy
-
-Use `--skip-spectrograms` if BCI IV-2a data is not locally available.
-
-#### Step 3 — Statistical significance tests
-
-```bash
-uv run python scripts/phase4_stats.py \
-    --summary results/phase4_summary.json \
-    --output results/phase4_stats.json
-```
-
-Runs Wilcoxon signed-rank tests and paired t-tests across per-subject accuracies. Reports Cohen's d effect sizes and significance stars (*, **, ***). Compares: baselines vs. dual-branch, transfer vs. scratch, fusion variants via Friedman test.
 
 ---
 
@@ -358,31 +216,14 @@ Runs Wilcoxon signed-rank tests and paired t-tests across per-subject accuracies
 Verify the full pipeline end-to-end in minutes using synthetic data:
 
 ```bash
-# Phase 1 baselines
-uv run python scripts/baseline_a_csp_lda.py --data synthetic --n-subjects 3 --n-folds 2
-uv run python scripts/baseline_b_riemannian.py --data synthetic --n-subjects 3 --n-folds 2
-uv run python scripts/baseline_c_vit.py --data synthetic --n-subjects 2 --n-folds 2 --epochs 3 --no-pretrained
+# Baselines
+uv run python scripts/pipeline/stage_02_baseline_a.py --run-dir runs/synth
+uv run python scripts/pipeline/stage_03_baseline_b.py --run-dir runs/synth
 
-# Phase 2 dual-branch
-uv run python scripts/train_dual_branch.py \
-    --data synthetic --n-subjects 2 --n-folds 2 --epochs 3 \
-    --no-pretrained --batch-size 4
-
-# Phase 3 transfer learning
-uv run python scripts/pretrain_physionet.py \
-    --data synthetic --n-subjects 5 --epochs 5 --no-pretrained \
-    --checkpoint checkpoints/test_ckpt.pt
-
-uv run python scripts/finetune_bci_iv2a.py \
-    --data synthetic --checkpoint checkpoints/test_ckpt.pt \
-    --conditions scratch transfer \
-    --n-subjects 2 --n-folds 2 --epochs 5
-
-uv run python scripts/reduced_data_experiment.py \
-    --data synthetic --checkpoint checkpoints/test_ckpt.pt \
-    --conditions scratch transfer \
-    --fractions 0.50 1.00 \
-    --n-subjects 2 --n-folds 2 --n-repeats 1 --epochs 5
+# Pretrain + transfer + reduced-data
+uv run python scripts/pipeline/stage_04_pretrain_vit.py --run-dir runs/synth
+uv run python scripts/pipeline/stage_06_dual_branch.py --run-dir runs/synth --epochs 3 --batch-size 4
+uv run python scripts/pipeline/stage_07_reduced_data.py --run-dir runs/synth --fractions 0.50 1.00 --n-repeats 1 --epochs 3
 ```
 
 ---

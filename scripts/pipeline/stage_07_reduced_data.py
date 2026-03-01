@@ -1,19 +1,18 @@
-"""Stage 07 – Reduced-data transfer learning experiment.
+"""Reduced-data transfer learning experiment.
 
-Loads BCI IV-2a epochs and cached 9-channel spectrograms (Stage 01).
-Uses PhysioNet-pretrained backbone from Stage 04.
+    Loads BCI IV-2a epochs and cached 9-channel spectrograms.
+    Uses PhysioNet-pretrained backbone from pretraining.
 
-For each training-data fraction (10%, 25%, 50%, 75%, 100%) and for both
-'scratch' (ImageNet init) and 'transfer' (PhysioNet-pretrained) conditions,
-trains the DualBranchModel with attention fusion multiple times and records
-accuracy. This is the core thesis experiment.
+For each training-data fraction (10%, 25%, 50%, 75%, 100%), trains the
+DualBranchModel with attention fusion using the PhysioNet-pretrained
+backbone and records accuracy. This is the core thesis experiment.
 
-Prerequisite: Stage 01 and Stage 04 must have been run first.
+    Prerequisite: Download and pretraining must have been run first.
 
 Output::
 
     <run-dir>/results/real_reduced_data_results_vit.json
-    <run-dir>/plots/stage_07_vit/  (accuracy-vs-fraction summary plot)
+    <run-dir>/plots/reduced_data_vit/  (accuracy-vs-fraction summary plot)
 
 Usage::
 
@@ -46,7 +45,6 @@ _CLASSIFIER_HIDDEN = {
 
 
 def _run_one_trial(
-    condition: str,
     X_train_full,
     y_train_full,
     X_test,
@@ -60,7 +58,6 @@ def _run_one_trial(
     batch_size: int = 16,
     warmup_epochs: int = 2,
     patience: int = 10,
-    unfreeze_last_n: int = 2,
     seed: int = 0,
 ) -> float:
     """Run one reduced-data trial and return test accuracy.
@@ -71,8 +68,6 @@ def _run_one_trial(
 
     Parameters
     ----------
-    condition:
-        ``"scratch"`` or ``"transfer"`` — passed to :func:`_build_model`.
     X_train_full, y_train_full:
         Full training split (before sub-sampling).
     X_test, y_test:
@@ -88,8 +83,6 @@ def _run_one_trial(
         PyTorch device string.
     epochs, lr, batch_size, warmup_epochs, patience:
         Trainer hyper-parameters.
-    unfreeze_last_n:
-        Passed to :func:`_build_model` when backbone is frozen.
     seed:
         Random seed for both sub-sampling and training.
 
@@ -102,8 +95,6 @@ def _run_one_trial(
     import torch
     from sklearn.model_selection import StratifiedShuffleSplit
     from torch.utils.data import DataLoader
-
-    from scripts.pipeline.stage_06_dual_branch import _build_model
 
     from bci.training.evaluation import compute_metrics
     from bci.training.trainer import Trainer
@@ -122,12 +113,20 @@ def _run_one_trial(
     else:
         X_tr, y_tr = X_train_full, y_train_full
 
+    if checkpoint_path is None or not Path(checkpoint_path).exists():
+        raise FileNotFoundError(
+            f"PhysioNet checkpoint required for transfer; got: {checkpoint_path}"
+        )
+
     train_ds, test_ds, math_input_dim = builder.build_fold(X_tr, y_tr, X_test, y_test)
+
+    from scripts.pipeline.stage_06_dual_branch import _build_model
+
     model = _build_model(
-        condition=condition,
+        condition="transfer",
         math_input_dim=math_input_dim,
         checkpoint_path=checkpoint_path,
-        unfreeze_last_n=unfreeze_last_n,
+        unfreeze_last_n=2,
         fusion="attention",
     )
 
@@ -135,7 +134,7 @@ def _run_one_trial(
         imgs, feats, labels = batch
         return _m(imgs.to(_device), feats.to(_device)), labels.to(_device)
 
-    backbone_scale = 0.1 if condition == "transfer" else None
+    backbone_scale = 0.1
     trainer = Trainer(
         model=model,
         device=device,
@@ -151,7 +150,7 @@ def _run_one_trial(
         num_workers=0,
         backbone_lr_scale=backbone_scale,
     )
-    trainer.fit(train_ds, forward_fn=fwd, model_tag=f"{condition}_trial")
+    trainer.fit(train_ds, forward_fn=fwd, model_tag="transfer_trial")
 
     test_loader = DataLoader(test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
     y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
@@ -161,7 +160,7 @@ def _run_one_trial(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 07: Reduced-data transfer learning experiment.",
+        description="Reduced-data transfer learning experiment.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir", required=True)
@@ -190,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--checkpoint",
         default=None,
-        help="Path to PhysioNet-pretrained backbone checkpoint from Stage 04 "
+        help="Path to PhysioNet-pretrained backbone checkpoint from pretraining "
         "(default: <run-dir>/checkpoints/vit_pretrained_physionet_vit.pt)",
     )
     return p.parse_args()
@@ -202,7 +201,7 @@ def save_fraction_summary_plot(
     plots_dir: Path,
     backbone: str,
 ) -> None:
-    """Save accuracy-vs-fraction curves for scratch vs. transfer."""
+    """Save accuracy-vs-fraction curve for transfer dual-branch."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -211,8 +210,8 @@ def save_fraction_summary_plot(
 
     plots_dir.mkdir(parents=True, exist_ok=True)
     conditions = list(results.keys())
-    colors = {"scratch": "steelblue", "transfer": "darkorange"}
-    markers = {"scratch": "o", "transfer": "s"}
+    colors = {"transfer": "darkorange"}
+    markers = {"transfer": "s"}
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for cond in conditions:
@@ -232,7 +231,7 @@ def save_fraction_summary_plot(
                 xs,
                 ys,
                 yerr=errs,
-                label=cond.capitalize(),
+                label="Transfer (Dual-Branch)",
                 color=colors.get(cond),
                 marker=markers.get(cond, "o"),
                 capsize=4,
@@ -255,12 +254,12 @@ def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
     backbone = args.backbone
-    bshort = _BACKBONE_SHORT.get(backbone, backbone)
-    log = setup_stage_logging(run_dir, "stage_07", f"stage_07_reduced_data_{bshort}.log")
+    bshort = str(_BACKBONE_SHORT.get(backbone, backbone) or backbone)
+    log = setup_stage_logging(run_dir, "reduced_data", f"reduced_data_{bshort}.log")
     log.info("Backbone: %s  (short: %s)", backbone, bshort)
 
     out_path = run_dir / "results" / f"real_reduced_data_results_{bshort}.json"
-    plots_dir = run_dir / "plots" / f"stage_07_{bshort}"
+    plots_dir = run_dir / "plots" / f"reduced_data_{bshort}"
 
     if out_path.exists():
         log.info("Result already exists at %s – skipping.", out_path)
@@ -271,11 +270,14 @@ def main() -> None:
         if args.checkpoint
         else run_dir / "checkpoints" / "vit_pretrained_physionet_vit.pt"
     )
+    if not checkpoint_path.exists():
+        log.error("PhysioNet checkpoint not found at %s. Run pretraining first.", checkpoint_path)
+        sys.exit(1)
     processed_dir = Path(args.processed_dir) if args.processed_dir else None
 
     import numpy as np
     import torch
-    from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
+    from sklearn.model_selection import StratifiedShuffleSplit
     from torch.utils.data import DataLoader, TensorDataset
 
     from bci.data.download import (
@@ -287,6 +289,7 @@ def main() -> None:
     from bci.data.dual_branch_builder import DualBranchFoldBuilder
     from bci.models.dual_branch import DualBranchModel
     from bci.training.evaluation import compute_metrics
+    from bci.training.splits import get_or_create_splits
     from bci.training.trainer import Trainer
     from bci.utils.config import ModelConfig
     from bci.utils.seed import get_device, set_seed
@@ -296,7 +299,7 @@ def main() -> None:
     _device = torch.device(device)
     fused_dim = _FUSED_DIM.get(backbone, 256)
     cls_hidden = _CLASSIFIER_HIDDEN.get(backbone, 128)
-    # Must match Stage 04 pretraining resolution (64×64 = 16 patches, ~12× faster)
+    # Must match pretraining resolution (64×64 = 16 patches, ~12× faster)
     TARGET_IMG_SIZE = 64
 
     # ── Load epoch cache ───────────────────────────────────────────────────
@@ -304,7 +307,7 @@ def main() -> None:
     try:
         subject_data, channel_names, sfreq = load_all_subjects("bci_iv2a", data_dir=processed_dir)
     except FileNotFoundError as e:
-        log.error("%s  Run Stage 01 first.", e)
+        log.error("%s  Run the download step first.", e)
         sys.exit(1)
     log.info("Loaded %d subjects.", len(subject_data))
 
@@ -313,7 +316,7 @@ def main() -> None:
     try:
         spec_mean, spec_std = load_spectrogram_stats("bci_iv2a", data_dir=processed_dir)
     except FileNotFoundError as e:
-        log.error("%s  Run Stage 01 first.", e)
+        log.error("%s  Run the download step first.", e)
         sys.exit(1)
 
     pdir = _get_processed_dir("bci_iv2a", processed_dir)
@@ -343,6 +346,14 @@ def main() -> None:
         sfreq=128.0,
     )
 
+    split_spec = get_or_create_splits(
+        run_dir=run_dir,
+        dataset="bci_iv2a",
+        subject_data=subject_data,
+        n_folds=args.n_folds,
+        seed=args.seed,
+    )
+
     def normalise_specs(imgs: np.ndarray) -> np.ndarray:
         # Resize from on-disk 224×224 to TARGET_IMG_SIZE×TARGET_IMG_SIZE
         if imgs.shape[-1] != TARGET_IMG_SIZE:
@@ -369,37 +380,37 @@ def main() -> None:
             n_classes=2,
         )
         model = DualBranchModel(math_input_dim=math_input_dim, config=cfg, img_size=TARGET_IMG_SIZE)
-        if condition == "transfer":
-            if checkpoint_path.exists():
-                ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-                backbone_state = {
-                    k: v
-                    for k, v in ckpt.items()
-                    if not (k.startswith("head") or k.startswith("classifier"))
-                }
-                model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
-            else:
-                log.warning(
-                    "Checkpoint not found at %s; transfer condition uses ImageNet init only.",
-                    checkpoint_path,
-                )
-            model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
+        if checkpoint_path.exists():
+            ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+            backbone_state = {
+                k: v
+                for k, v in ckpt.items()
+                if not (k.startswith("head") or k.startswith("classifier"))
+            }
+            model.vit_branch.backbone.load_state_dict(backbone_state, strict=False)
+        else:
+            log.warning(
+                "Checkpoint not found at %s; transfer condition uses ImageNet init only.",
+                checkpoint_path,
+            )
+        model.freeze_vit_backbone(unfreeze_last_n_blocks=2)
         return model
 
-    conditions = ["scratch", "transfer"]
-    results: dict[str, dict] = {c: {} for c in conditions}
+    results: dict[str, dict] = {"transfer": {}}
     t_total = time.time()
 
     for fraction in args.fractions:
         frac_str = f"{fraction:.2f}"
         log.info("=== Fraction %.0f%% ===", fraction * 100)
-        cond_accs: dict[str, list[float]] = {c: [] for c in conditions}
+        cond_accs: dict[str, list[float]] = {"transfer": []}
 
         for sid in common_sids:
             X, y = subject_data[sid]
             spec_imgs, _ = subject_spec_data[sid]
-            skf = StratifiedKFold(n_splits=args.n_folds, shuffle=True, random_state=args.seed)
-            for fold_i, (train_idx, test_idx) in enumerate(skf.split(X, y)):
+            folds = split_spec.within_subject.get(sid, [])
+            for fold_i, fold in enumerate(folds):
+                train_idx = np.array(fold["train_idx"], dtype=int)
+                test_idx = np.array(fold["test_idx"], dtype=int)
                 X_train_full = X[train_idx]
                 y_train_full = y[train_idx]
                 spec_train_full = spec_imgs[train_idx]
@@ -421,104 +432,104 @@ def main() -> None:
                     else:
                         X_tr, y_tr, spec_tr = X_train_full, y_train_full, spec_train_full
 
-                    for condition in conditions:
-                        set_seed(trial_seed)
-                        try:
-                            # Build handcrafted features from raw EEG
-                            train_ds_base, test_ds_base, math_input_dim = builder.build_fold(
-                                X_tr, y_tr, X_test, y_test
-                            )
-                            # Replace image tensors with cached normalised spectrograms
-                            spec_tr_n = normalise_specs(spec_tr).astype(np.float32)
-                            spec_test_n = normalise_specs(spec_test).astype(np.float32)
-                            _, feats_tr, labels_tr = [t for t in zip(*train_ds_base.tensors)]
-                            _, feats_te, labels_te = [t for t in zip(*test_ds_base.tensors)]
-                            train_ds = TensorDataset(
-                                torch.from_numpy(spec_tr_n), feats_tr, labels_tr
-                            )
-                            test_ds = TensorDataset(
-                                torch.from_numpy(spec_test_n), feats_te, labels_te
+                    set_seed(trial_seed)
+                    try:
+                        features_train, features_test, math_input_dim = builder.build_math_features(
+                            X_tr,
+                            y_tr,
+                            X_test,
+                            y_test,
+                            cache_path=run_dir
+                            / "cache"
+                            / "math_features"
+                            / f"reduced_data_transfer_s{sid:02d}_f{fold_i:02d}_r{rep:02d}_frac{fraction:.2f}.npz",
+                        )
+                        # Replace image tensors with cached normalised spectrograms
+                        spec_tr_n = normalise_specs(spec_tr).astype(np.float32)
+                        spec_test_n = normalise_specs(spec_test).astype(np.float32)
+                        train_ds = TensorDataset(
+                            torch.from_numpy(spec_tr_n),
+                            torch.from_numpy(features_train),
+                            torch.from_numpy(y_tr.astype(np.int64)),
+                        )
+                        test_ds = TensorDataset(
+                            torch.from_numpy(spec_test_n),
+                            torch.from_numpy(features_test),
+                            torch.from_numpy(y_test.astype(np.int64)),
+                        )
+
+                        model = build_model("transfer", math_input_dim)
+
+                        def fwd(batch, _m=model):
+                            imgs, feats, labels = batch
+                            return (
+                                _m(imgs.to(_device), feats.to(_device)),
+                                labels.to(_device),
                             )
 
-                            model = build_model(condition, math_input_dim)
-
-                            def fwd(batch, _m=model):
-                                imgs, feats, labels = batch
-                                return (
-                                    _m(imgs.to(_device), feats.to(_device)),
-                                    labels.to(_device),
-                                )
-
-                            backbone_scale = 0.1 if condition == "transfer" else None
-                            trainer = Trainer(
-                                model=model,
-                                device=device,
-                                learning_rate=1e-4,
-                                weight_decay=1e-4,
-                                epochs=args.epochs,
-                                batch_size=args.batch_size,
-                                warmup_epochs=3,
-                                patience=8,
-                                label_smoothing=0.1,
-                                val_fraction=0.2,
-                                seed=trial_seed,
-                                num_workers=0,
-                                backbone_lr_scale=backbone_scale,
-                            )
-                            trainer.fit(
-                                train_ds,
-                                forward_fn=fwd,
-                                model_tag=f"{condition}_{bshort}_f{fraction:.0%}",
-                            )
-                            test_loader = DataLoader(
-                                test_ds,
-                                batch_size=args.batch_size * 2,
-                                shuffle=False,
-                                num_workers=0,
-                            )
-                            y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
-                            m = compute_metrics(y_test, y_pred, y_prob)
-                            acc = m["accuracy"]
-                        except Exception as e:
-                            log.warning(
-                                "Trial failed (S%d fold%d rep%d %s): %s",
-                                sid,
-                                fold_i,
-                                rep,
-                                condition,
-                                e,
-                            )
-                            acc = float("nan")
-
-                        cond_accs[condition].append(acc)
-                        log.info(
-                            "  %s | S%02d fold%d rep%d | frac=%.0f%% | acc=%.2f%%",
-                            condition.upper(),
+                        trainer = Trainer(
+                            model=model,
+                            device=device,
+                            learning_rate=1e-4,
+                            weight_decay=1e-4,
+                            epochs=args.epochs,
+                            batch_size=args.batch_size,
+                            warmup_epochs=3,
+                            patience=8,
+                            label_smoothing=0.1,
+                            val_fraction=0.2,
+                            seed=trial_seed,
+                            num_workers=0,
+                            backbone_lr_scale=0.1,
+                        )
+                        trainer.fit(
+                            train_ds,
+                            forward_fn=fwd,
+                            model_tag=f"transfer_{bshort}_f{fraction:.0%}",
+                        )
+                        test_loader = DataLoader(
+                            test_ds,
+                            batch_size=args.batch_size * 2,
+                            shuffle=False,
+                            num_workers=0,
+                        )
+                        y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
+                        m = compute_metrics(y_test, y_pred, y_prob)
+                        acc = m["accuracy"]
+                    except Exception as e:
+                        log.warning(
+                            "Trial failed (S%d fold%d rep%d transfer): %s",
                             sid,
                             fold_i,
                             rep,
-                            fraction * 100,
-                            acc,
+                            e,
                         )
+                        acc = float("nan")
 
-        for condition in conditions:
-            valid_accs = [a for a in cond_accs[condition] if a == a]  # filter NaN
-            results[condition][frac_str] = {
-                "fraction_pct": round(fraction * 100),
-                "mean_accuracy": round(float(np.mean(valid_accs)), 4)
-                if valid_accs
-                else float("nan"),
-                "std_accuracy": round(float(np.std(valid_accs)), 4) if valid_accs else float("nan"),
-                "n_runs": len(valid_accs),
-            }
-            log.info(
-                "  %s @ %.0f%%: %.2f%% ± %.2f%% (n=%d)",
-                condition.upper(),
-                fraction * 100,
-                results[condition][frac_str]["mean_accuracy"],
-                results[condition][frac_str]["std_accuracy"],
-                len(valid_accs),
-            )
+                    cond_accs["transfer"].append(acc)
+                    log.info(
+                        "  TRANSFER | S%02d fold%d rep%d | frac=%.0f%% | acc=%.2f%%",
+                        sid,
+                        fold_i,
+                        rep,
+                        fraction * 100,
+                        acc,
+                    )
+
+        valid_accs = [a for a in cond_accs["transfer"] if a == a]
+        results["transfer"][frac_str] = {
+            "fraction_pct": round(fraction * 100),
+            "mean_accuracy": round(float(np.mean(valid_accs)), 4) if valid_accs else float("nan"),
+            "std_accuracy": round(float(np.std(valid_accs)), 4) if valid_accs else float("nan"),
+            "n_runs": len(valid_accs),
+        }
+        log.info(
+            "  TRANSFER @ %.0f%%: %.2f%% ± %.2f%% (n=%d)",
+            fraction * 100,
+            results["transfer"][frac_str]["mean_accuracy"],
+            results["transfer"][frac_str]["std_accuracy"],
+            len(valid_accs),
+        )
 
     elapsed = time.time() - t_total
     log.info("Reduced-data experiment done in %.1fs (%.1f min)", elapsed, elapsed / 60)
@@ -541,8 +552,21 @@ def main() -> None:
             f,
             indent=2,
         )
+    try:
+        from bci.utils.results_index import update_results_index, write_manifest
+
+        outputs = {"reduced_data": str(out_path)}
+        update_results_index(run_dir, "reduced_data", outputs)
+        write_manifest(
+            run_dir,
+            "reduced_data",
+            outputs,
+            meta={"fractions": args.fractions, "n_repeats": args.n_repeats},
+        )
+    except Exception as e:
+        log.warning("Failed to update results index: %s", e)
     log.info("Saved: %s", out_path)
-    log.info("Stage 07 complete.")
+    log.info("Reduced-data experiment complete.")
 
 
 if __name__ == "__main__":

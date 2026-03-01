@@ -1,16 +1,16 @@
-"""Stage 05 – Baseline C: ViT-only classifier on BCI IV-2a spectrograms.
+"""ViT-only classifier on BCI IV-2a spectrograms.
 
 Loads pre-cached 9-channel multichannel CWT spectrograms for BCI IV-2a
-subjects (written by Stage 01) and fine-tunes a ViT-Tiny classifier.
-Uses PhysioNet-pretrained backbone weights from Stage 04 checkpoint.
+subjects and fine-tunes a ViT-Tiny classifier.
+Uses PhysioNet-pretrained backbone weights from pretraining.
 Runs 5-fold within-subject CV and LOSO CV.
 
-Prerequisite: Stage 01 and Stage 04 must have been run first.
+Prerequisite: Download and pretraining must have been run first.
 
 Output::
 
     <run-dir>/results/real_baseline_c_vit.json
-    <run-dir>/plots/stage_05_vit/  (per-fold training curves + confusion matrices)
+    <run-dir>/plots/vit_baseline/  (per-fold training curves + confusion matrices)
 
 Usage::
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from bci.utils.visualization import save_confusion_matrix, save_per_subject_accu
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 05: Baseline C – ViT-only on cached spectrograms.",
+        description="Baseline C – ViT-only on cached spectrograms.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir", required=True)
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--checkpoint",
         default=None,
-        help="Path to PhysioNet-pretrained backbone checkpoint from Stage 04 "
+        help="Path to PhysioNet-pretrained backbone checkpoint from pretraining "
         "(default: <run-dir>/checkpoints/vit_pretrained_physionet_vit.pt)",
     )
     args, _ = p.parse_known_args()
@@ -73,12 +74,12 @@ def run_vit_cv(
     """Run ViT-only CV (within_subject or loso) and save results."""
     import numpy as np
     import torch
-    from sklearn.model_selection import StratifiedKFold
     from torch.utils.data import DataLoader, TensorDataset
 
     from bci.models.vit_branch import ViTBranch
     from bci.training.cross_validation import CVResult, FoldResult
     from bci.training.evaluation import compute_metrics
+    from bci.training.splits import get_or_create_splits
     from bci.training.trainer import Trainer
     from bci.utils.config import ModelConfig
     from bci.utils.seed import set_seed
@@ -86,14 +87,14 @@ def run_vit_cv(
     MODEL_NAME = "CWT+ViT-Tiny (PhysioNet pretrained)"
     BACKBONE = "vit_tiny_patch16_224"
     # Resize to 64×64: ViT-Tiny patch16 at 64×64 = 16 patches vs 196 at 224×224.
-    # Must match the img_size used in Stage 04 pretraining.
+    # Must match the img_size used in pretraining.
     TARGET_IMG_SIZE = 64
 
     tag_base = "real_baseline_c_vit"
     if strategy == "loso":
         tag_base += "_loso"
     out_path = run_dir / "results" / f"{tag_base}.json"
-    plots_dir = run_dir / "plots" / f"stage_05_vit_{strategy}"
+    plots_dir = run_dir / "plots" / f"vit_baseline_{strategy}"
 
     if out_path.exists():
         log.info("Already exists: %s – skipping.", out_path)
@@ -110,17 +111,18 @@ def run_vit_cv(
             n_classes=2,
         )
         model = ViTBranch(config=cfg, as_feature_extractor=False, img_size=TARGET_IMG_SIZE)
-        if checkpoint_path.exists():
-            ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-            # Strip head keys to load only backbone weights
-            backbone_state = {
-                k: v
-                for k, v in ckpt.items()
-                if not (k.startswith("head") or k.startswith("classifier"))
-            }
-            model.backbone.load_state_dict(backbone_state, strict=False)
-        else:
-            log.warning("Checkpoint not found at %s; using ImageNet init only.", checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"PhysioNet checkpoint not found at {checkpoint_path}; run pretraining first."
+            )
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        # Strip head keys to load only backbone weights
+        backbone_state = {
+            k: v
+            for k, v in ckpt.items()
+            if not (k.startswith("head") or k.startswith("classifier"))
+        }
+        model.backbone.load_state_dict(backbone_state, strict=False)
         model.freeze_backbone(unfreeze_last_n_blocks=2)
         return model
 
@@ -143,14 +145,25 @@ def run_vit_cv(
     t0 = time.time()
     all_folds: list[FoldResult] = []
     subjects = sorted(subject_spec_data.keys())
+    split_spec = get_or_create_splits(
+        run_dir=run_dir,
+        dataset="bci_iv2a",
+        subject_data={
+            sid: (subject_spec_data[sid][0], subject_spec_data[sid][1]) for sid in subjects
+        },
+        n_folds=n_folds,
+        seed=seed,
+    )
 
     if strategy == "within_subject":
         fold_counter = 0
         for sid in subjects:
             imgs, y = subject_spec_data[sid]
             log.info("Subject %d (%d trials)...", sid, len(y))
-            skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-            for train_idx, test_idx in skf.split(imgs, y):
+            folds = split_spec.within_subject.get(sid, [])
+            for fold_idx, fold in enumerate(folds):
+                train_idx = np.array(fold["train_idx"], dtype=int)
+                test_idx = np.array(fold["test_idx"], dtype=int)
                 set_seed(seed + fold_counter)
                 train_ds = make_ds(imgs[train_idx], y[train_idx])
                 test_ds = make_ds(imgs[test_idx], y[test_idx])
@@ -184,7 +197,7 @@ def run_vit_cv(
                 y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
                 m = compute_metrics(y[test_idx], y_pred, y_prob)
                 fr = FoldResult(
-                    fold=fold_counter,
+                    fold=fold_idx,
                     subject=sid,
                     accuracy=m["accuracy"],
                     kappa=m["kappa"],
@@ -197,7 +210,7 @@ def run_vit_cv(
                 )
                 log.info(
                     "  Fold %d [S%02d]: acc=%.2f%%  kappa=%.3f",
-                    fold_counter,
+                    fold_idx,
                     sid,
                     fr.accuracy,
                     fr.kappa,
@@ -206,11 +219,10 @@ def run_vit_cv(
                 fold_counter += 1
 
     else:  # loso
-        for fold_idx, test_sid in enumerate(subjects):
-            train_imgs = np.concatenate(
-                [subject_spec_data[s][0] for s in subjects if s != test_sid]
-            )
-            train_y = np.concatenate([subject_spec_data[s][1] for s in subjects if s != test_sid])
+        for fold_idx, test_sid in enumerate(split_spec.loso_subjects):
+            train_sids = [s for s in split_spec.loso_subjects if s != test_sid]
+            train_imgs = np.concatenate([subject_spec_data[s][0] for s in train_sids])
+            train_y = np.concatenate([subject_spec_data[s][1] for s in train_sids])
             test_imgs, test_y = subject_spec_data[test_sid]
             log.info("LOSO fold %d/%d: test=S%02d", fold_idx + 1, len(subjects), test_sid)
 
@@ -334,6 +346,19 @@ def run_vit_cv(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(data, f, indent=2)
+    try:
+        from bci.utils.results_index import update_results_index, write_manifest
+
+        outputs = {f"{strategy}": str(out_path)}
+        update_results_index(run_dir, "vit_baseline", outputs)
+        write_manifest(
+            run_dir,
+            "vit_baseline",
+            outputs,
+            meta={"strategy": strategy},
+        )
+    except Exception as e:
+        log.warning("Failed to update results index: %s", e)
     log.info("Saved: %s", out_path)
     return out_path
 
@@ -341,7 +366,7 @@ def run_vit_cv(
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
-    log = setup_stage_logging(run_dir, "stage_05", "stage_05_vit_baseline.log")
+    log = setup_stage_logging(run_dir, "vit_baseline", "vit_baseline.log")
 
     checkpoint_path = (
         Path(args.checkpoint)
@@ -365,14 +390,14 @@ def main() -> None:
     try:
         spec_mean, spec_std = load_spectrogram_stats("bci_iv2a", data_dir=processed_dir)
     except FileNotFoundError as e:
-        log.error("%s  Run Stage 01 first.", e)
+        log.error("%s  Run the download step first.", e)
         sys.exit(1)
 
     # ── Discover available subjects ────────────────────────────────────────
     pdir = _get_processed_dir("bci_iv2a", processed_dir)
     spec_files = sorted(pdir.glob("subject_[0-9]*_spectrograms.npz"))
     if not spec_files:
-        log.error("No BCI IV-2a spectrogram files found in %s. Run Stage 01 first.", pdir)
+        log.error("No BCI IV-2a spectrogram files found in %s. Run the download step first.", pdir)
         sys.exit(1)
     subject_ids = [int(p.stem.split("_")[1]) for p in spec_files]
     log.info("Found %d BCI IV-2a subjects.", len(subject_ids))
@@ -391,6 +416,9 @@ def main() -> None:
         log.error("No data loaded. Exiting.")
         sys.exit(1)
 
+    if not checkpoint_path.exists():
+        log.error("PhysioNet checkpoint not found at %s. Run pretraining first.", checkpoint_path)
+        sys.exit(1)
     log.info("Loaded %d subjects, checkpoint=%s", len(subject_spec_data), checkpoint_path)
 
     # ── Within-subject CV ──────────────────────────────────────────────────
@@ -405,7 +433,7 @@ def main() -> None:
         n_folds=args.n_folds,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        device=device,
+        device=str(device),
         seed=args.seed,
         log=log,
     )
@@ -422,12 +450,12 @@ def main() -> None:
         n_folds=args.n_folds,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        device=device,
+        device=str(device),
         seed=args.seed,
         log=log,
     )
 
-    log.info("Stage 05 complete.")
+    log.info("ViT baseline complete.")
 
 
 if __name__ == "__main__":

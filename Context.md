@@ -1,6 +1,6 @@
 # BCI Transfer Learning — Codebase Context
 
-This document describes the full project for an LLM reader: goal, data flow, datasets, preprocessing, models, pipeline stages, test suite, and key constants.
+This document describes the full project for an LLM reader: goal, data flow, datasets, preprocessing, models, pipeline steps, test suite, and key constants.
 
 ---
 
@@ -28,7 +28,7 @@ transfer-learning-bci/
 │       ├── bci_iv2a.yaml      # BCI IV-2a baseline config (no ICA, h_freq=30 Hz)
 │       └── physionet.yaml     # PhysioNet config (19 channels, 60 Hz notch)
 ├── scripts/
-│   ├── run_all.sh             # PRIMARY orchestrator: runs all 8 stages in order (bash)
+│   ├── run_all.sh             # PRIMARY orchestrator: runs all steps in order (bash)
 │   ├── run_full_experiment.py # Python orchestrator: same pipeline, adds --dry-run/--skip-*
 │   ├── smoke_test.py          # Quick sanity check (no full data needed)
 │   ├── __init__.py
@@ -70,9 +70,13 @@ transfer-learning-bci/
 │       ├── visualization.py     # save_training_curves, save_confusion_matrix, save_per_subject_accuracy
 │       └── seed.py              # set_seed, get_device
 ├── tests/
-│   ├── test_phase1.py           # Unit tests for Stage 02/03 helpers (CSP+LDA, Riemannian+LDA)
-│   ├── test_phase2.py           # Unit tests for Stage 04/05 helpers (ViTBranch, CWT transform)
-│   └── test_phase3.py           # Unit tests for Stage 06/07 helpers (DualBranch, reduced-data)
+│   ├── test_baselines.py         # CSP+LDA and Riemannian+LDA baselines
+│   ├── test_cv.py                # Cross-validation + split manager
+│   ├── test_dual_branch_builder.py # Dual-branch builder + model
+│   ├── test_features.py          # FBCSP, FBRiemannian, recenter
+│   ├── test_trainer_eval.py      # Trainer + metrics
+│   ├── test_transfer_and_reduced.py # Transfer + reduced-data
+│   └── test_vit_pretrain.py      # ViT pretraining + checkpoints
 └── pyproject.toml               # uv/ruff/pytest config; pythonpath = ["src", "scripts"]
 ```
 
@@ -83,7 +87,7 @@ transfer-learning-bci/
 | Constant | Value | Where defined |
 |---|---|---|
 | Bandpass filter | 8–32 Hz | All pipeline stages; `SpectrogramConfig.freq_min/max` |
-| Spectrogram channels | `["C3","C1","Cz","C2","C4","FC3","FC4","CP3","CP4"]` | `SpectrogramConfig.spectrogram_channels` in `config.py`; hardcoded in stage_08 figure |
+| Spectrogram channels | `["C3","C1","Cz","C2","C4","FC3","FC4","CP3","CP4"]` | `SpectrogramConfig.spectrogram_channels` in `config.py`; hardcoded in results figure |
 | Number of spec channels | 9 | `ModelConfig.in_chans = 9`; all stages use `in_chans=9` |
 | Spectrogram image size | 224 × 224 | `SpectrogramConfig.image_size` |
 | CWT wavelet | Morlet (`"morl"`) | `SpectrogramConfig.wavelet` |
@@ -122,7 +126,7 @@ transfer-learning-bci/
 - 109 subjects, imagined L/R hand + feet MI tasks.
 - 64 EEG channels at 160 Hz, downsampled to 128 Hz.
 - Loaded via MOABB (`PhysionetMI`).
-- Used only for **pre-training the ViT backbone** (Stage 04). Not used in evaluation.
+- Used only for **pre-training the ViT backbone**. Not used in evaluation.
 - 60 Hz notch filter (US power line frequency).
 
 ---
@@ -130,30 +134,30 @@ transfer-learning-bci/
 ## Data Flow
 
 ```
-Stage 01: MOABB download → preprocess → .npz epoch cache + spectrogram cache
+Download: MOABB download → preprocess → .npz epoch cache + spectrogram cache
                                                │
            ┌───────────────────────────────────┤
            ▼                                   ▼
-Stage 02: Epoch cache (.npz)          Stage 04: Spectrogram cache (PhysioNet)
-          → CSP+LDA CV                         → pretrain ViT backbone → checkpoint
-Stage 03: Epoch cache (.npz)                   │
-          → Riemannian+LDA CV         Stage 05: BCI spectrogram cache + checkpoint
+Baseline A: Epoch cache (.npz)        Pretrain: Spectrogram cache (PhysioNet)
+           → CSP+LDA CV                        → pretrain ViT backbone → checkpoint
+Baseline B: Epoch cache (.npz)                │
+           → Riemannian+LDA CV      ViT-only: BCI spectrogram cache + checkpoint
                                                → ViT-only fine-tune CV
-                                      Stage 06: Epoch cache + spec cache + checkpoint
-                                               → DualBranch ablation (attention / gated)
-                                      Stage 07: Epoch cache + spec cache + checkpoint
+                                      Dual-Branch: Epoch cache + spec cache + checkpoint
+                                               → ablation (attention / gated)
+                                      Reduced-data: Epoch cache + spec cache + checkpoint
                                                → reduced-data transfer experiment
                                                │
                                                ▼
-                                      Stage 08: All result JSONs
+                                      Results: All result JSONs
                                                → tables + stats + 5 figures
 ```
 
-All stages read from `data/processed/<dataset>/subject_NN.npz` (epochs) or `subject_NN_spectrograms.npz` (spectrograms), both written by Stage 01. All result JSONs go to `<run-dir>/results/`. Checkpoints go to `<run-dir>/checkpoints/`.
+All steps read from `data/processed/<dataset>/subject_NN.npz` (epochs) or `subject_NN_spectrograms.npz` (spectrograms), both written by the download step. All result JSONs go to `<run-dir>/results/`. Checkpoints go to `<run-dir>/checkpoints/`.
 
 ---
 
-## Preprocessing (Stage 01 / `src/bci/data/`)
+## Preprocessing (download step / `src/bci/data/`)
 
 1. **MOABB download**: epochs loaded via `process_and_cache()` in `download.py`. Applies 8–32 Hz bandpass + 50/60 Hz notch during MOABB epoch extraction.
 2. **Epoch saving**: per-subject `(X, y, channel_names, sfreq)` saved to `.npz`.
@@ -190,7 +194,7 @@ Both implement `fit`, `transform`, `fit_transform` (sklearn API).
 - **`in_chans=9`**: patch embedding accepts 9-channel spectrograms (not RGB).
 - Two modes:
   - `as_feature_extractor=True`: replaces classification head with `nn.Identity`; outputs 192-dim feature vector.
-  - `as_feature_extractor=False`: keeps classification head for standalone training (Stage 04/05).
+  - `as_feature_extractor=False`: keeps classification head for standalone training (pretrain / ViT baseline).
 - `freeze_backbone(unfreeze_last_n_blocks=2)`: freezes all but the last 2 transformer blocks for transfer fine-tuning.
 - `unfreeze_all()`: sets `requires_grad = True` for every parameter (used in LP-FT Phase 2).
 - `get_layerwise_param_groups()`: returns `[(name, params)]` tuples ordered shallow→deep for layer-wise LR decay: `patch_embed → pos_embed → cls_token → block_0..11 → norm → head`.
@@ -243,9 +247,9 @@ Three strategies:
 
 ---
 
-## Pipeline Stages
+## Pipeline Steps
 
-### Stage 01 — Download + Cache (`stage_01_download.py`)
+### Download + Cache (`stage_01_download.py`)
 **Inputs**: internet (MOABB), `~/mne_data`  
 **Outputs**: `data/processed/bci_iv2a/subject_NN.npz`, `subject_NN_spectrograms.npz`, `spectrogram_stats.npz`; same for `physionet/`
 
@@ -253,7 +257,7 @@ Downloads BCI IV-2a and PhysioNet via MOABB, applies 8–32 Hz bandpass, saves r
 
 ---
 
-### Stage 02 — Baseline A: CSP + LDA (`stage_02_baseline_a.py`)
+### Baseline A: CSP + LDA (`stage_02_baseline_a.py`)
 **Inputs**: `data/processed/bci_iv2a/`  
 **Outputs**: `results/real_baseline_a_csp_lda.json`
 
@@ -263,17 +267,17 @@ Downloads BCI IV-2a and PhysioNet via MOABB, applies 8–32 Hz bandpass, saves r
 
 ---
 
-### Stage 03 — Baseline B: Riemannian + LDA (`stage_03_baseline_b.py`)
+### Baseline B: Riemannian + LDA (`stage_03_baseline_b.py`)
 **Inputs**: `data/processed/bci_iv2a/`  
 **Outputs**: `results/real_baseline_b_riemannian.json`
 
-Same CV structure as Stage 02, but uses Riemannian tangent-space features (OAS covariance) + LDA.
+Same CV structure as Baseline A, but uses Riemannian tangent-space features (OAS covariance) + LDA.
 
 **Exported function**: `make_predict_fn(estimator, metric)` → `predict_fn(X_train, y_train, X_test)`.
 
 ---
 
-### Stage 04 — Pretrain ViT on PhysioNet (`stage_04_pretrain_vit.py`)
+### Pretrain ViT on PhysioNet (`stage_04_pretrain_vit.py`)
 **Inputs**: `data/processed/physionet/` spectrogram cache  
 **Outputs**: `checkpoints/vit_pretrained_physionet_vit.pt`, `results/real_pretrain_physionet_vit.json`
 
@@ -300,16 +304,16 @@ The `main()` function uses a **lazy-loading** strategy to stay well within 16 GB
 
 ---
 
-### Stage 05 — ViT-Only Baseline (`stage_05_vit_baseline.py`)
-**Inputs**: BCI IV-2a spectrogram cache, Stage 04 checkpoint  
+### ViT-Only Baseline (`stage_05_vit_baseline.py`)
+**Inputs**: BCI IV-2a spectrogram cache, pretrain checkpoint  
 **Outputs**: `results/real_baseline_c_vit.json`, `results/real_baseline_c_vit_loso.json`
 
-Fine-tunes ViT-Tiny (`in_chans=9`) on BCI IV-2a spectrograms with PhysioNet-pretrained backbone. Freezes all except last 2 transformer blocks (`freeze_backbone(unfreeze_last_n_blocks=2)`). Runs 5-fold within-subject CV and LOSO CV. Falls back to ImageNet init if checkpoint is missing.
+Fine-tunes ViT-Tiny (`in_chans=9`) on BCI IV-2a spectrograms with PhysioNet-pretrained backbone. Freezes all except last 2 transformer blocks (`freeze_backbone(unfreeze_last_n_blocks=2)`). Runs 5-fold within-subject CV and LOSO CV. Errors if checkpoint is missing.
 
 ---
 
-### Stage 06 — Dual-Branch Ablation (`stage_06_dual_branch.py`)
-**Inputs**: BCI IV-2a epoch cache + spectrogram cache, Stage 04 checkpoint  
+### Dual-Branch Ablation (`stage_06_dual_branch.py`)
+**Inputs**: BCI IV-2a epoch cache + spectrogram cache, pretrain checkpoint  
 **Outputs**: `results/real_dual_branch_{fusion}_vit.json` × 2 fusion methods × (within + LOSO)
 
 Full `DualBranchModel` trained with:
@@ -319,38 +323,37 @@ Full `DualBranchModel` trained with:
 - Differential LR: backbone 10× smaller (`backbone_lr_scale=0.1`).
 
 **Exported functions**:
-- `_build_model(condition, math_input_dim, checkpoint_path, unfreeze_last_n, fusion)` — conditions: `"scratch"` (random ViT init), `"imagenet"` (ImageNet ViT, frozen), `"transfer"` (PhysioNet ViT, frozen).
+- `_build_model(condition, math_input_dim, checkpoint_path, unfreeze_last_n, fusion)` — conditions: `"scratch"`, `"imagenet"`, `"transfer"` (transfer requires checkpoint).
 - `_train_and_eval_fold(fold_idx, subject_id, X_train, y_train, X_test, y_test, condition, checkpoint_path, builder, ...)` → `FoldResult`.
 
 ---
 
-### Stage 07 — Reduced-Data Experiment (`stage_07_reduced_data.py`)
-**Inputs**: BCI IV-2a epoch cache + spectrogram cache, Stage 04 checkpoint  
-**Outputs**: `results/real_reduced_data_results_vit.json`, `plots/stage_07_vit/accuracy_vs_fraction.png`
+### Reduced-Data Experiment (`stage_07_reduced_data.py`)
+**Inputs**: BCI IV-2a epoch cache + spectrogram cache, pretrain checkpoint  
+**Outputs**: `results/real_reduced_data_results_vit.json`, `plots/reduced_data_vit/accuracy_vs_fraction.png`
 
-The **core thesis experiment**. For training-data fractions `[10%, 25%, 50%, 75%, 100%]`, compares:
-- **`"scratch"`**: DualBranch trained from ImageNet ViT init, no PhysioNet pretraining.
+The **core thesis experiment**. For training-data fractions `[10%, 25%, 50%, 75%, 100%]`, evaluates:
 - **`"transfer"`**: DualBranch with PhysioNet-pretrained backbone, partially frozen.
 
 Runs 5-fold within-subject CV × 3 repeats per fraction. Tests transfer learning advantage at low data regimes.
 
-**Exported function**: `_run_one_trial(condition, X_train_full, y_train_full, X_test, y_test, fraction, builder, checkpoint_path, ...)` → accuracy float.
+**Exported function**: `_run_one_trial(X_train_full, y_train_full, X_test, y_test, fraction, builder, checkpoint_path, ...)` → accuracy float.
 
 ---
 
-### Stage 08 — Results, Plots, Stats (`stage_08_results.py`)
-**Inputs**: All JSON files from Stages 02–07  
+### Results, Plots, Stats (`stage_08_results.py`)
+**Inputs**: All result JSON files  
 **Outputs**: 5 thesis figures, `results/phase4_summary.json`, `results/phase4_stats.json`
 
 Loads all result JSONs, prints a comprehensive comparison table (within-subject + LOSO), runs:
 - Wilcoxon signed-rank test: DualBranch(Attention) vs each baseline.
-- Paired t-test: transfer vs scratch conditions.
+- Paired t-test: transfer conditions when available.
 - Friedman test: attention vs gated fusion.
 - Cohen's d effect sizes.
 
 Generates 5 thesis figures:
 1. CWT spectrogram examples (3 channels × 2 classes × 3 trials).
-2. Accuracy vs. training data fraction (transfer vs scratch).
+2. Accuracy vs. training data fraction (transfer only).
 3. Fusion ablation bar chart (attention vs gated).
 4. Per-subject accuracy heatmap (all models × 9 subjects).
 5. Overall model comparison bar chart.
@@ -363,7 +366,7 @@ Generates 5 thesis figures:
 # Primary (bash, recommended)
 bash scripts/run_all.sh --device cuda --epochs 50 --batch-size 32
 
-# Python alternative (adds --dry-run, --skip-stage-N, --run-dir for resume)
+# Python alternative (adds --dry-run, --skip-step-N, --run-dir for resume)
 uv run python scripts/run_full_experiment.py --device cuda
 
 # Resume after crash (reuses existing run directory)
@@ -372,8 +375,8 @@ RUN_DIR=runs/2024-01-15_143022 bash scripts/run_all.sh
 
 Both orchestrators:
 - Create a timestamped `runs/<timestamp>/` directory.
-- Run all 8 stages in order, passing `--run-dir` to each.
-- Skip stages whose output files already exist (idempotent / resumable).
+- Run all steps in order, passing `--run-dir` to each.
+- Skip steps whose output files already exist (idempotent / resumable).
 
 `run_all.sh` is the primary recommended entry point. `run_full_experiment.py` is useful for programmatic control (CI, dry-runs, selective skipping).
 
@@ -381,16 +384,16 @@ Both orchestrators:
 
 ## Test Suite
 
-All 65 tests pass (`uv run pytest tests/ -v`). `pythonpath = ["src", "scripts"]` in `pyproject.toml` puts both on `sys.path`; `scripts/__init__.py` and `scripts/pipeline/__init__.py` make stages importable as packages.
+All tests pass (`uv run pytest tests/ -v`). `pythonpath = ["src", "scripts"]` in `pyproject.toml` puts both on `sys.path`; `scripts/__init__.py` and `scripts/pipeline/__init__.py` make pipeline modules importable as packages.
 
-### `tests/test_phase1.py`
-Unit tests for Stage 02/03 helpers. Imports from `scripts.pipeline.stage_02_baseline_a` and `scripts.pipeline.stage_03_baseline_b`. Tests `make_predict_fn`, CSP+LDA accuracy on synthetic data, Riemannian+LDA accuracy, `within_subject_cv_all`, `loso_cv`.
+### `tests/test_baselines.py`
+Unit tests for CSP+LDA and Riemannian+LDA baselines.
 
-### `tests/test_phase2.py`
-Unit tests for Stage 04/05 helpers. Tests `CWTSpectrogramTransform`, `ViTBranch` forward pass with `in_chans=9`, `Trainer` on synthetic data, `compute_metrics`, `DualBranchFoldBuilder`.
+### `tests/test_vit_pretrain.py`
+Unit tests for ViT pretraining and checkpointing.
 
-### `tests/test_phase3.py`
-Unit tests for Stage 06/07 helpers. Imports from `scripts.pipeline.stage_06_dual_branch` and `scripts.pipeline.stage_07_reduced_data`. Tests `_build_model` (all 3 conditions), `_train_and_eval_fold`, `_run_one_trial`, `DualBranchModel` forward pass, `AttentionFusion`, `GatedFusion`.
+### `tests/test_transfer_and_reduced.py`
+Unit tests for transfer loading and reduced-data flow.
 
 ---
 
@@ -412,38 +415,38 @@ All pipeline-relevant defaults live here as Python dataclasses:
 
 ## Visualization & Plot Output (`src/bci/utils/visualization.py`)
 
-Three focused plotting functions, used by Stages 04–07 for summary-level plots (no per-fold plots):
+Three focused plotting functions, used by pretraining, ViT baseline, dual-branch, and reduced-data steps for summary-level plots (no per-fold plots):
 
 ### `save_training_curves(history, best_epoch, best_val_accuracy, plots_dir, filename, title)`
 - Dual-panel figure: train/val loss (left), train/val accuracy (right).
 - Marks the best epoch with a dashed vertical line and annotation.
-- Used by Stage 04 (`save_pretrain_plot` delegates here).
+- Used by pretraining (`save_pretrain_plot` delegates here).
 
 ### `save_confusion_matrix(y_true, y_pred, plots_dir, filename, title, class_labels)`
 - Single heatmap with `figsize=(5, 4)`, `annot_kws={"size": 14}`, and cell divider gridlines.
 - Fixes the old clipped-row bug (was `figsize=(4, 3)`).
-- Used by Stages 05 and 06 for aggregate confusion matrices (concatenated across all folds).
+- Used by ViT baseline and dual-branch for aggregate confusion matrices (concatenated across all folds).
 
 ### `save_per_subject_accuracy(per_subject, plots_dir, filename, title)`
 - Horizontal bar chart of per-subject accuracy with a dashed mean-accuracy line.
 - Accepts `dict[str, float]` mapping subject IDs to accuracy percentages.
-- Used by Stages 05 and 06 for LOSO per-subject summaries.
+- Used by ViT baseline and dual-branch for LOSO per-subject summaries.
 
 ### Plot Titles
 All plot titles are clean and descriptive — no stage numbers. Examples:
-- `"ViT Pretraining on PhysioNet (LP-FT)"` (Stage 04)
-- `"ViT-Only Baseline (Within-Subject CV)"` (Stage 05)
-- `"Dual-Branch Attention (LOSO)"` (Stage 06)
-- `"Reduced-Data Transfer Learning Experiment"` (Stage 07)
+- `"ViT Pretraining on PhysioNet (LP-FT)"`
+- `"ViT-Only Baseline (Within-Subject CV)"`
+- `"Dual-Branch Attention (LOSO)"`
+- `"Reduced-Data Transfer Learning Experiment"`
 
-### Per-Stage Plot Outputs
-| Stage | Plot Files | Description |
-|-------|-----------|-------------|
-| 04 | `pretrain_curves.png` | LP-FT or uniform training curves |
-| 05 | `within_subject_confusion.png`, `loso_confusion.png`, `loso_per_subject.png` | Aggregate across all folds |
-| 06 | `{fusion}_within_confusion.png`, `{fusion}_loso_confusion.png`, `{fusion}_loso_per_subject.png` | Per fusion method, aggregate across folds |
-| 07 | `accuracy_vs_fraction.png` | Transfer vs scratch at 10–100% data |
-| 08 | 5 thesis figures (spectrogram examples, accuracy vs fraction, fusion ablation, heatmap, model comparison) | Publication-quality |
+### Per-Step Plot Outputs
+| Step | Plot Files | Description |
+|------|-----------|-------------|
+| Pretrain | `pretrain_curves.png` | LP-FT or uniform training curves |
+| ViT baseline | `within_subject_confusion.png`, `loso_confusion.png`, `loso_per_subject.png` | Aggregate across all folds |
+| Dual-branch | `{fusion}_within_confusion.png`, `{fusion}_loso_confusion.png`, `{fusion}_loso_per_subject.png` | Per fusion method, aggregate across folds |
+| Reduced-data | `accuracy_vs_fraction.png` | Transfer-only at 10–100% data |
+| Results | 5 thesis figures (spectrogram examples, accuracy vs fraction, fusion ablation, heatmap, model comparison) | Publication-quality |
 
 ---
 
@@ -452,4 +455,4 @@ All plot titles are clean and descriptive — no stage numbers. Examples:
 These are pre-existing and can be safely ignored:
 - `EpochsArray.astype` / `.shape` — MNE type stubs are incomplete.
 - `fit_transform` override in feature extractors — sklearn protocol not fully typed.
-- `TensorDataset` tuple-unpacking in stage_06/07 — LSP can't infer tensor tuple structure.
+- `TensorDataset` tuple-unpacking in dual-branch/reduced-data — LSP can't infer tensor tuple structure.

@@ -1,16 +1,16 @@
-"""Stage 04 – Pretrain ViT backbone on PhysioNet MMIDB spectrograms.
+"""Pretrain ViT backbone on PhysioNet MMIDB spectrograms.
 
 Loads pre-cached 9-channel multichannel CWT spectrograms for all PhysioNet
-subjects (written by Stage 01) and trains a ViT-Tiny classifier.  Saves
+subjects and trains a ViT-Tiny classifier.  Saves
 the resulting backbone weights as a checkpoint for use in Stages 05–06.
 
-Prerequisite: Stage 01 must have been run first.
+Prerequisite: Download must have been run first.
 
 Output::
 
     <run-dir>/checkpoints/vit_pretrained_physionet_vit.pt
     <run-dir>/results/real_pretrain_physionet_vit.json
-    <run-dir>/plots/stage_04_pretrain/  (training loss and val-accuracy curves)
+    <run-dir>/plots/pretrain/  (training loss and val-accuracy curves)
 
 Usage::
 
@@ -176,6 +176,7 @@ def pretrain_vit(
         imgs, labels = batch
         return _m(imgs.to(_device)), labels.to(_device)
 
+    lp_result = None  # type: ignore[assignment]
     if lp_epochs > 0:
         # -- LP-FT: two-phase training ------------------------------------
         # Phase 1: Linear Probe
@@ -259,15 +260,16 @@ def pretrain_vit(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.backbone.state_dict(), checkpoint_path)
 
-    metrics["checkpoint"] = str(checkpoint_path)
+    metrics_out: dict[str, object] = dict(metrics)
+    metrics_out["checkpoint"] = str(checkpoint_path)
     # Alias: tests and callers may expect "val_accuracy"
-    metrics.setdefault("val_accuracy", metrics.get("accuracy", 0.0))
-    return metrics
+    metrics_out.setdefault("val_accuracy", metrics_out.get("accuracy", 0.0))
+    return metrics_out
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 04: Pretrain ViT backbone on PhysioNet spectrograms.",
+        description="Pretrain ViT backbone on PhysioNet spectrograms.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir", required=True)
@@ -337,14 +339,14 @@ def save_pretrain_plot(history: list, best_epoch: int, plots_dir: Path, title: s
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
-    log = setup_stage_logging(run_dir, "stage_04", "stage_04_pretrain_vit.log")
+    log = setup_stage_logging(run_dir, "pretrain", "pretrain_vit.log")
 
     checkpoint_path = run_dir / "checkpoints" / "vit_pretrained_physionet_vit.pt"
     out_path = run_dir / "results" / "real_pretrain_physionet_vit.json"
-    plots_dir = run_dir / "plots" / "stage_04_pretrain"
+    plots_dir = run_dir / "plots" / "pretrain"
 
     if checkpoint_path.exists() and out_path.exists():
-        log.info("Checkpoint and results already exist – skipping Stage 04.")
+        log.info("Checkpoint and results already exist – skipping pretrain.")
         return
 
     import numpy as np
@@ -369,7 +371,7 @@ def main() -> None:
     try:
         mean, std = load_spectrogram_stats("physionet", data_dir=processed_dir)
     except FileNotFoundError as e:
-        log.error("%s  Run Stage 01 first.", e)
+        log.error("%s  Run the download step first.", e)
         sys.exit(1)
 
     # Discover available subject IDs
@@ -378,7 +380,7 @@ def main() -> None:
     pdir = _get_processed_dir("physionet", processed_dir)
     spec_files = sorted(pdir.glob("subject_[0-9]*_spectrograms.npz"))
     if not spec_files:
-        log.error("No PhysioNet spectrogram files found in %s. Run Stage 01 first.", pdir)
+        log.error("No PhysioNet spectrogram files found in %s. Run the download step first.", pdir)
         sys.exit(1)
 
     subject_ids = [int(p.stem.split("_")[1]) for p in spec_files]
@@ -443,7 +445,7 @@ def main() -> None:
 
     # Target image size: 64×64 gives ViT-Tiny 16 patches instead of 196 at
     # 224×224 — ~12× fewer attention operations, fits easily on 4 GB VRAM.
-    # We resize on load so Stage 01 does not need to be re-run.
+    # We resize on load so the download step does not need to be re-run.
     TARGET_IMG_SIZE = 64
 
     log.info(
@@ -573,6 +575,7 @@ def main() -> None:
     t0 = time.time()
     use_lpft = args.lp_epochs > 0
     final_trainer: Trainer  # will be assigned in the branch below
+    lp_result = None
 
     if use_lpft:
         # ── Phase 1: Linear Probe (LP) ────────────────────────────────────
@@ -609,10 +612,13 @@ def main() -> None:
             model_tag="stage04_lp",
             val_dataset=val_ds,
         )
+        assert lp_result is not None
+        lp_best_val = lp_result.best_val_accuracy if lp_result else 0.0
+        lp_best_epoch = lp_result.best_epoch if lp_result else 0
         log.info(
             "LP done: best_val_acc=%.2f%% @ epoch %d",
-            lp_result.best_val_accuracy,
-            lp_result.best_epoch,
+            lp_best_val,
+            lp_best_epoch,
         )
 
         # ── Phase 2: Full Fine-Tune (FT) with layer-wise LR decay ────────
@@ -660,7 +666,8 @@ def main() -> None:
 
         # Use FT result as the main result; combine histories for plotting
         train_result = ft_result
-        combined_history = lp_result.history + ft_result.history
+        lp_history = lp_result.history if lp_result else []
+        combined_history = lp_history + ft_result.history
         # Re-number epochs sequentially for the combined plot
         for i, r in enumerate(combined_history):
             combined_history[i] = type(r)(
@@ -726,7 +733,7 @@ def main() -> None:
     log.info("Checkpoint saved: %s", checkpoint_path)
 
     results = {
-        "stage": "04_pretrain_vit",
+        "stage": "pretrain_vit",
         "backbone": "vit_tiny_patch16_224",
         "source": "physionet",
         "strategy": "lp_ft" if use_lpft else "uniform",
@@ -742,9 +749,10 @@ def main() -> None:
         "checkpoint": str(checkpoint_path),
     }
     if use_lpft:
+        lp_best = lp_result.best_val_accuracy if lp_result is not None else 0.0
         results["lp_epochs"] = args.lp_epochs
         results["lp_lr"] = args.lp_lr
-        results["lp_best_val_acc"] = lp_result.best_val_accuracy
+        results["lp_best_val_acc"] = lp_best
         results["ft_epochs"] = args.ft_epochs
         results["ft_lr"] = args.ft_lr
         results["layer_lr_decay"] = args.layer_lr_decay
@@ -753,7 +761,7 @@ def main() -> None:
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     log.info("Saved: %s", out_path)
-    log.info("Stage 04 complete.")
+    log.info("Pretrain complete.")
 
 
 if __name__ == "__main__":

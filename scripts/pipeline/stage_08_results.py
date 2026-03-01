@@ -1,26 +1,21 @@
-"""Stage 08 – Result Analysis, Plotting, and Statistical Tests.
+"""Result analysis, plotting, and statistical tests.
 
 Reads all result JSON files produced by Stages 02–07, prints a comprehensive
 comparison table, runs statistical significance tests, generates five thesis
 figures, and saves a combined summary JSON.
 
-Consolidates logic previously spread across:
-  - scripts/phase4_compile_results.py
-  - scripts/phase4_visualize.py
-  - scripts/phase4_stats.py
-
 Result files consumed (all under <run-dir>/results/):
-  - real_baseline_a_csp_lda.json         (Stage 02)
-  - real_baseline_a_csp_lda_loso.json    (Stage 02)
-  - real_baseline_b_riemannian.json       (Stage 03)
-  - real_baseline_b_riemannian_loso.json  (Stage 03)
-  - real_baseline_c_vit.json              (Stage 05)
-  - real_baseline_c_vit_loso.json         (Stage 05)
-  - real_dual_branch_attention_vit.json   (Stage 06)
-  - real_dual_branch_attention_vit_loso.json (Stage 06)
-  - real_dual_branch_gated_vit.json       (Stage 06)
-  - real_dual_branch_gated_vit_loso.json  (Stage 06)
-  - real_reduced_data_results_vit.json    (Stage 07)
+  - real_baseline_a_csp_lda.json
+  - real_baseline_a_csp_lda_loso.json
+  - real_baseline_b_riemannian.json
+  - real_baseline_b_riemannian_loso.json
+  - real_baseline_c_vit.json
+  - real_baseline_c_vit_loso.json
+  - real_dual_branch_attention_vit.json
+  - real_dual_branch_attention_vit_loso.json
+  - real_dual_branch_gated_vit.json
+  - real_dual_branch_gated_vit_loso.json
+  - real_reduced_data_results_vit.json
 
 Outputs (under <run-dir>/):
   - results/phase4_summary.json           combined summary for downstream use
@@ -60,9 +55,9 @@ def setup_logging(run_dir: Path) -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
     for lib in ("mne", "matplotlib", "moabb"):
         logging.getLogger(lib).setLevel(logging.ERROR)
-    log = logging.getLogger("stage_08")
+    log = logging.getLogger("results")
     run_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(run_dir / "stage_08_results.log")
+    fh = logging.FileHandler(run_dir / "results.log")
     fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
     log.addHandler(fh)
     return log
@@ -85,7 +80,7 @@ def load_baseline_ab(path: Path, loso_path: Path | None = None) -> dict | None:
 
     Accepts either:
     - A single JSON with top-level ``within_subject`` and ``loso`` keys, or
-    - Separate within-subject and LOSO JSON files (new stage 02/03 format).
+    - Separate within-subject and LOSO JSON files (new baseline format).
     """
     data = _load_json(path)
     if data is None:
@@ -313,12 +308,14 @@ def wilcoxon_test(a: list[float], b: list[float]) -> tuple[float, float]:
         if np.all(diffs == 0):
             return float("nan"), 1.0
         stat, p = wilcoxon(diffs)
-        return float(stat), float(p)
+        stat_val = stat[0] if isinstance(stat, tuple) else stat
+        p_val = p[0] if isinstance(p, tuple) else p
+        return float(np.asarray(stat_val).item()), float(np.asarray(p_val).item())
     except ImportError:
-        logging.getLogger("stage_08").warning("scipy not available; skipping Wilcoxon test.")
+        logging.getLogger("results").warning("scipy not available; skipping Wilcoxon test.")
         return float("nan"), float("nan")
     except Exception as e:
-        logging.getLogger("stage_08").warning("Wilcoxon test failed: %s", e)
+        logging.getLogger("results").warning("Wilcoxon test failed: %s", e)
         return float("nan"), float("nan")
 
 
@@ -341,7 +338,7 @@ def t_test_paired(a: list[float], b: list[float]) -> tuple[float, float]:
         t = mean_d / (std_d / math.sqrt(n))
         return float(t), float("nan")
     except Exception as e:
-        logging.getLogger("stage_08").warning("t-test failed: %s", e)
+        logging.getLogger("results").warning("t-test failed: %s", e)
         return float("nan"), float("nan")
 
 
@@ -352,10 +349,10 @@ def friedman_test(*groups: list[float]) -> tuple[float, float]:
         stat, p = friedmanchisquare(*groups)
         return float(stat), float(p)
     except ImportError:
-        logging.getLogger("stage_08").warning("scipy not available; skipping Friedman test.")
+        logging.getLogger("results").warning("scipy not available; skipping Friedman test.")
         return float("nan"), float("nan")
     except Exception as e:
-        logging.getLogger("stage_08").warning("Friedman test failed: %s", e)
+        logging.getLogger("results").warning("Friedman test failed: %s", e)
         return float("nan"), float("nan")
 
 
@@ -384,7 +381,7 @@ def _pval_stars(p: float) -> str:
 
 
 def analyze_baseline_vs_dual(summary: dict) -> list[dict]:
-    log = logging.getLogger("stage_08")
+    log = logging.getLogger("results")
     results = []
     dual_attn = summary.get("dual_branch", {}).get("attention")
     if dual_attn is None:
@@ -433,15 +430,9 @@ def analyze_transfer_conditions(summary: dict) -> list[dict]:
     results = []
     tl = summary.get("transfer_learning", {})
     conditions = {
-        "scratch": tl.get("scratch"),
-        "imagenet": tl.get("imagenet"),
         "transfer": tl.get("transfer"),
     }
-    pairs = [
-        ("transfer", "scratch", "EEG-Pretrained vs Scratch"),
-        ("transfer", "imagenet", "EEG-Pretrained vs ImageNet"),
-        ("imagenet", "scratch", "ImageNet vs Scratch"),
-    ]
+    pairs: list[tuple[str, str, str]] = []
     for cond_a, cond_b, label in pairs:
         ra = conditions.get(cond_a)
         rb = conditions.get(cond_b)
@@ -600,7 +591,7 @@ def print_stats_table(baseline_results: list[dict], transfer_results: list[dict]
 def _save_fig(fig, path: Path, dpi: int = 150) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    logging.getLogger("stage_08").info("Saved figure: %s", path)
+    logging.getLogger("results").info("Saved figure: %s", path)
 
 
 def plot_spectrogram_examples(
@@ -611,7 +602,7 @@ def plot_spectrogram_examples(
 ) -> None:
     """Plot 9-channel CWT spectrogram examples from cached BCI IV-2a data.
 
-    Loads subject 1 spectrograms from the Stage 01 cache and shows a
+    Loads subject 1 spectrograms from the cache and shows a
     montage of left-hand vs right-hand trials for the first three channels.
     Falls back gracefully if the cache is not present.
     """
@@ -622,7 +613,7 @@ def plot_spectrogram_examples(
 
     spec_path = processed_dir / "bci_iv2a" / "subject_01_spectrograms.npz"
     if not spec_path.exists():
-        logging.getLogger("stage_08").warning(
+        logging.getLogger("results").warning(
             "Spectrogram cache not found at %s; skipping Figure 1.", spec_path
         )
         return
@@ -637,7 +628,7 @@ def plot_spectrogram_examples(
 
     classes = np.unique(y)
     if len(classes) < 2:
-        logging.getLogger("stage_08").warning("Only one class in cache; skipping Figure 1.")
+        logging.getLogger("results").warning("Only one class in cache; skipping Figure 1.")
         return
 
     left_idx = np.where(y == classes[0])[0][:n_examples]
@@ -675,7 +666,7 @@ def plot_spectrogram_examples(
 
 
 def plot_reduced_data_curves(summary: dict, output_path: Path, dpi: int = 150) -> None:
-    """Accuracy vs fraction of training data (transfer vs scratch)."""
+    """Accuracy vs fraction of training data (transfer dual-branch)."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -683,16 +674,16 @@ def plot_reduced_data_curves(summary: dict, output_path: Path, dpi: int = 150) -
 
     reduced = summary.get("reduced_data")
     if not reduced:
-        logging.getLogger("stage_08").warning("No reduced-data results. Skipping Figure 2.")
+        logging.getLogger("results").warning("No reduced-data results. Skipping Figure 2.")
         return
 
     results = reduced.get("results", {})
     fractions = reduced.get("fractions", [0.10, 0.25, 0.50, 0.75, 1.00])
     conditions = list(results.keys())
 
-    colors = {"scratch": "#e74c3c", "imagenet": "#3498db", "transfer": "#2ecc71"}
-    labels = {"scratch": "Scratch", "imagenet": "ImageNet", "transfer": "EEG-Pretrained (Ours)"}
-    markers = {"scratch": "o", "imagenet": "s", "transfer": "^"}
+    colors = {"transfer": "#2ecc71"}
+    labels = {"transfer": "Transfer Dual-Branch"}
+    markers = {"transfer": "^"}
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for cond in conditions:
@@ -762,7 +753,7 @@ def plot_fusion_ablation(summary: dict, output_path: Path, dpi: int = 150) -> No
             bar_colors.append(c)
 
     if not accs:
-        logging.getLogger("stage_08").warning(
+        logging.getLogger("results").warning(
             "No dual-branch results for ablation. Skipping Figure 3."
         )
         return
@@ -833,7 +824,7 @@ def plot_per_subject_heatmap(summary: dict, output_path: Path, dpi: int = 150) -
         model_rows.append(("DualBranch\n(Gated)", ps))
 
     if not model_rows:
-        logging.getLogger("stage_08").warning("No per-subject data found. Skipping Figure 4.")
+        logging.getLogger("results").warning("No per-subject data found. Skipping Figure 4.")
         return
 
     all_subjects = sorted(set(int(sid) for _, ps in model_rows for sid in ps.keys()))
@@ -886,7 +877,7 @@ def plot_baseline_comparison(summary: dict, output_path: Path, dpi: int = 150) -
             colors.append(color)
 
     if not names:
-        logging.getLogger("stage_08").warning(
+        logging.getLogger("results").warning(
             "Not enough data for comparison chart. Skipping Figure 5."
         )
         return
@@ -926,7 +917,7 @@ def plot_baseline_comparison(summary: dict, output_path: Path, dpi: int = 150) -
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 08: Result analysis, plotting, and statistical tests.",
+        description="Result analysis, plotting, and statistical tests.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--run-dir", required=True, help="Experiment run directory.")
@@ -945,7 +936,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--backbone",
         default="vit",
-        help="Backbone short-name used in stage 06/07 output filenames (e.g. 'vit').",
+        help="Backbone short-name used in dual-branch output filenames (e.g. 'vit').",
     )
     return p.parse_args()
 
@@ -971,8 +962,17 @@ def main() -> None:
     # ------------------------------------------------------------------
     log.info("Loading result files from %s ...", rd)
 
+    index_path = rd / "index.json"
+    index = _load_json(index_path) or {}
+
+    def _from_index(stage: str, key: str, fallback: Path) -> Path:
+        stage_entry = index.get(stage, {}) if isinstance(index, dict) else {}
+        outputs = stage_entry.get("outputs", {}) if isinstance(stage_entry, dict) else {}
+        path = outputs.get(key)
+        return Path(path) if path else fallback
+
     baseline_a = load_baseline_ab(
-        rd / "real_baseline_a_csp_lda.json",
+        _from_index("baseline_csp", "within_loso", rd / "real_baseline_a_csp_lda.json"),
         rd / "real_baseline_a_csp_lda_loso.json",
     )
     if baseline_a:
@@ -980,7 +980,7 @@ def main() -> None:
         log.info("  Loaded Baseline A")
 
     baseline_b = load_baseline_ab(
-        rd / "real_baseline_b_riemannian.json",
+        _from_index("baseline_riemann", "within_loso", rd / "real_baseline_b_riemannian.json"),
         rd / "real_baseline_b_riemannian_loso.json",
     )
     if baseline_b:
@@ -988,28 +988,50 @@ def main() -> None:
         log.info("  Loaded Baseline B")
 
     baseline_c = load_baseline_c(
-        rd / "real_baseline_c_vit.json",
-        rd / "real_baseline_c_vit_loso.json",
+        _from_index("vit_baseline", "within_subject", rd / "real_baseline_c_vit.json"),
+        _from_index("vit_baseline", "loso", rd / "real_baseline_c_vit_loso.json"),
     )
     if baseline_c:
         baseline_c["model"] = "Baseline C: CWT+ViT-Tiny"
         log.info("  Loaded Baseline C (ViT-only)")
 
     dual_attn = load_dual_branch(
-        rd / f"real_dual_branch_attention_{bshort}.json",
-        rd / f"real_dual_branch_attention_{bshort}_loso.json",
+        _from_index(
+            "dual_branch",
+            "attention_within_subject",
+            rd / f"real_dual_branch_attention_{bshort}.json",
+        ),
+        _from_index(
+            "dual_branch",
+            "attention_loso",
+            rd / f"real_dual_branch_attention_{bshort}_loso.json",
+        ),
     )
     if dual_attn:
         log.info("  Loaded Dual-Branch (attention)")
 
     dual_gated = load_dual_branch(
-        rd / f"real_dual_branch_gated_{bshort}.json",
-        rd / f"real_dual_branch_gated_{bshort}_loso.json",
+        _from_index(
+            "dual_branch",
+            "gated_within_subject",
+            rd / f"real_dual_branch_gated_{bshort}.json",
+        ),
+        _from_index(
+            "dual_branch",
+            "gated_loso",
+            rd / f"real_dual_branch_gated_{bshort}_loso.json",
+        ),
     )
     if dual_gated:
         log.info("  Loaded Dual-Branch (gated)")
 
-    reduced = load_reduced_data(rd / f"real_reduced_data_results_{bshort}.json")
+    reduced = load_reduced_data(
+        _from_index(
+            "reduced_data",
+            "reduced_data",
+            rd / f"real_reduced_data_results_{bshort}.json",
+        )
+    )
     if reduced:
         log.info("  Loaded reduced-data results")
 
@@ -1132,7 +1154,7 @@ def main() -> None:
     # Figure 5: Baseline comparison
     plot_baseline_comparison(summary, figures_dir / "fig5_baseline_comparison.png", dpi=args.dpi)
 
-    log.info("Stage 08 complete. Figures saved to %s/", figures_dir)
+    log.info("Results complete. Figures saved to %s/", figures_dir)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from pathlib import Path
 import torch
 from torch.utils.data import TensorDataset
 
@@ -169,6 +170,61 @@ class DualBranchFoldBuilder:
         """
         logger.info("  Building fold: train=%d test=%d", len(y_train), len(y_test))
 
+        features_train, features_test, math_input_dim = self.build_math_features(
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            cache_path=None,
+        )
+
+        logger.info(
+            "  Handcrafted features: CSP=%d + Riemannian=%d = %d total",
+            csp_train.shape[1],
+            riemann_train.shape[1],
+            math_input_dim,
+        )
+
+        # --- Step 3: Generate CWT spectrogram images ---
+        logger.info("  Generating CWT spectrograms for train set...")
+        imgs_train = self._epochs_to_images(X_train)  # (n_train, C, H, W) float32
+
+        logger.info("  Generating CWT spectrograms for test set...")
+        imgs_test = self._epochs_to_images(X_test)  # (n_test, C, H, W) float32
+
+        # --- Step 4: Pack into TensorDatasets ---
+        train_ds = TensorDataset(
+            torch.tensor(imgs_train, dtype=torch.float32),
+            torch.tensor(features_train, dtype=torch.float32),
+            torch.tensor(y_train, dtype=torch.long),
+        )
+        test_ds = TensorDataset(
+            torch.tensor(imgs_test, dtype=torch.float32),
+            torch.tensor(features_test, dtype=torch.float32),
+            torch.tensor(y_test, dtype=torch.long),
+        )
+
+        return train_ds, test_ds, math_input_dim
+
+    def build_math_features(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        cache_path: Path | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        """Compute or load handcrafted features for a fold.
+
+        Returns (features_train, features_test, math_input_dim).
+        """
+        if cache_path is not None and cache_path.exists():
+            data = np.load(cache_path)
+            features_train = data["features_train"]
+            features_test = data["features_test"]
+            math_input_dim = int(features_train.shape[1])
+            return features_train, features_test, math_input_dim
+
         # --- Step 0: Preprocessing pipeline ---
         # Note: preprocessing is fit-free (no leakage), but Euclidean Alignment
         # is computed per split independently to avoid test-set statistics leaking.
@@ -204,33 +260,15 @@ class DualBranchFoldBuilder:
         features_test = np.concatenate([csp_test, riemann_test], axis=1).astype(np.float32)
         math_input_dim = features_train.shape[1]
 
-        logger.info(
-            "  Handcrafted features: CSP=%d + Riemannian=%d = %d total",
-            csp_train.shape[1],
-            riemann_train.shape[1],
-            math_input_dim,
-        )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                features_train=features_train,
+                features_test=features_test,
+            )
 
-        # --- Step 3: Generate CWT spectrogram images ---
-        logger.info("  Generating CWT spectrograms for train set...")
-        imgs_train = self._epochs_to_images(X_train)  # (n_train, C, H, W) float32
-
-        logger.info("  Generating CWT spectrograms for test set...")
-        imgs_test = self._epochs_to_images(X_test)  # (n_test, C, H, W) float32
-
-        # --- Step 4: Pack into TensorDatasets ---
-        train_ds = TensorDataset(
-            torch.tensor(imgs_train, dtype=torch.float32),
-            torch.tensor(features_train, dtype=torch.float32),
-            torch.tensor(y_train, dtype=torch.long),
-        )
-        test_ds = TensorDataset(
-            torch.tensor(imgs_test, dtype=torch.float32),
-            torch.tensor(features_test, dtype=torch.float32),
-            torch.tensor(y_test, dtype=torch.long),
-        )
-
-        return train_ds, test_ds, math_input_dim
+        return features_train, features_test, math_input_dim
 
     def _epochs_to_images(self, X: np.ndarray) -> np.ndarray:
         """Convert EEG epochs to normalised CHW float32 images.

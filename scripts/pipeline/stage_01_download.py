@@ -1,4 +1,4 @@
-"""Stage 01 – Download datasets and build .npz cache.
+"""Download datasets and build .npz cache.
 
 Downloads BCI Competition IV-2a and PhysioNet MMIDB via MOABB, epochs
 all subjects with an 8–32 Hz bandpass filter, and saves per-subject .npz
@@ -39,7 +39,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Stage 01: Download datasets and build .npz epoch + spectrogram cache.",
+        description="Download datasets and build .npz epoch + spectrogram cache.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -80,10 +80,10 @@ def setup_logging(run_dir: Path | None) -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
     for lib in ("mne", "pyriemann", "timm", "matplotlib", "moabb"):
         logging.getLogger(lib).setLevel(logging.ERROR)
-    log = logging.getLogger("stage_01")
+    log = logging.getLogger("download")
     if run_dir:
         run_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(run_dir / "stage_01_download.log")
+        fh = logging.FileHandler(run_dir / "download.log")
         fh.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
         log.addHandler(fh)
     return log
@@ -174,7 +174,7 @@ def main() -> None:
                 log.exception("PhysioNet spectrogram generation failed")
                 sys.exit(1)
 
-    log.info("Stage 01 complete.")
+    log.info("Download + cache complete.")
 
 
 if __name__ == "__main__":
