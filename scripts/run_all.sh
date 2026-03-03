@@ -70,6 +70,12 @@
 #   --n-folds N        CV folds           (default: 5)
 #   --n-repeats N      repeats for Stage 7 (default: 3)
 #   --seed N           random seed        (default: 42)
+#   --num-workers N    DataLoader workers (default: 4)
+#   --prefetch-factor N  batches prefetched per worker (default: 2)
+#   --persistent-workers  keep workers alive between epochs
+#   --amp             enable mixed precision (CUDA only)
+#   --compile         enable torch.compile (PyTorch 2.0+)
+#   --accumulation-steps N  gradient accumulation steps (default: 1)
 #
 # Set RUN_DIR env variable to reuse an existing directory, e.g.:
 #   RUN_DIR=runs/2024-01-15_143022 bash scripts/run_all.sh
@@ -101,6 +107,12 @@ BATCH_SIZE=32
 N_FOLDS=5
 N_REPEATS=3
 SEED=42
+NUM_WORKERS=4
+PREFETCH_FACTOR=2
+PERSISTENT_WORKERS=false
+AMP=false
+COMPILE=false
+ACCUMULATION_STEPS=1
 
 # ── Parse flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -111,6 +123,12 @@ while [[ $# -gt 0 ]]; do
         --n-folds)     N_FOLDS="$2";     shift 2 ;;
         --n-repeats)   N_REPEATS="$2";   shift 2 ;;
         --seed)        SEED="$2";        shift 2 ;;
+        --num-workers) NUM_WORKERS="$2"; shift 2 ;;
+        --prefetch-factor) PREFETCH_FACTOR="$2"; shift 2 ;;
+        --persistent-workers) PERSISTENT_WORKERS=true; shift 1 ;;
+        --amp) AMP=true; shift 1 ;;
+        --compile) COMPILE=true; shift 1 ;;
+        --accumulation-steps) ACCUMULATION_STEPS="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1" >&2
             echo "Run: bash scripts/run_all.sh  (with no args) to see usage in the header." >&2
@@ -118,6 +136,19 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+PERSISTENT_FLAG=""
+AMP_FLAG=""
+COMPILE_FLAG=""
+if [[ "$PERSISTENT_WORKERS" == "true" ]]; then
+    PERSISTENT_FLAG="--persistent-workers"
+fi
+if [[ "$AMP" == "true" ]]; then
+    AMP_FLAG="--amp"
+fi
+if [[ "$COMPILE" == "true" ]]; then
+    COMPILE_FLAG="--compile"
+fi
 
 # ── Run directory ─────────────────────────────────────────────────────────
 if [[ -z "${RUN_DIR:-}" ]]; then
@@ -151,6 +182,12 @@ _log "Batch size    : $BATCH_SIZE"
 _log "CV folds      : $N_FOLDS"
 _log "Repeats (S7)  : $N_REPEATS"
 _log "Seed          : $SEED"
+_log "Workers       : $NUM_WORKERS"
+_log "Prefetch      : $PREFETCH_FACTOR"
+_log "Persistent    : $PERSISTENT_WORKERS"
+_log "AMP           : $AMP"
+_log "Compile       : $COMPILE"
+_log "Accum steps   : $ACCUMULATION_STEPS"
 _log ""
 
 T_ALL=$(date +%s)
@@ -196,6 +233,9 @@ uv run python scripts/pipeline/stage_04_pretrain_vit.py \
     --run-dir "$RUN_DIR" \
     --epochs "$EPOCHS" \
     --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+    $PERSISTENT_FLAG \
+    $AMP_FLAG $COMPILE_FLAG --accumulation-steps "$ACCUMULATION_STEPS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 4 done in $(( $(date +%s) - T0 ))s"
 
@@ -208,6 +248,9 @@ uv run python scripts/pipeline/stage_05_vit_baseline.py \
     --run-dir "$RUN_DIR" \
     --epochs "$EPOCHS" \
     --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+    $PERSISTENT_FLAG \
+    $AMP_FLAG $COMPILE_FLAG --accumulation-steps "$ACCUMULATION_STEPS" \
     --n-folds "$N_FOLDS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 5 done in $(( $(date +%s) - T0 ))s"
@@ -221,6 +264,9 @@ uv run python scripts/pipeline/stage_06_dual_branch.py \
     --run-dir "$RUN_DIR" \
     --epochs "$EPOCHS" \
     --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+    $PERSISTENT_FLAG \
+    $AMP_FLAG $COMPILE_FLAG --accumulation-steps "$ACCUMULATION_STEPS" \
     --n-folds "$N_FOLDS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 6 done in $(( $(date +%s) - T0 ))s"
@@ -234,6 +280,9 @@ uv run python scripts/pipeline/stage_07_reduced_data.py \
     --run-dir "$RUN_DIR" \
     --epochs "$EPOCHS" \
     --batch-size "$BATCH_SIZE" --device "$DEVICE" --seed "$SEED" \
+    --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+    $PERSISTENT_FLAG \
+    $AMP_FLAG $COMPILE_FLAG --accumulation-steps "$ACCUMULATION_STEPS" \
     --n-repeats "$N_REPEATS" \
     2>&1 | tee -a "$LOG"
 _log "Stage 7 done in $(( $(date +%s) - T0 ))s"

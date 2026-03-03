@@ -48,6 +48,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader worker processes (0 = main process)",
+    )
+    p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per worker when num_workers > 0",
+    )
+    p.add_argument(
+        "--persistent-workers",
+        action="store_true",
+        help="Keep DataLoader workers alive between epochs",
+    )
+    p.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable automatic mixed precision on CUDA",
+    )
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable torch.compile for the model (PyTorch 2.0+)",
+    )
+    p.add_argument(
+        "--accumulation-steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps",
+    )
+    p.add_argument(
         "--checkpoint",
         default=None,
         help="Path to PhysioNet-pretrained backbone checkpoint from pretraining "
@@ -70,6 +103,12 @@ def run_vit_cv(
     device: str,
     seed: int,
     log,
+    num_workers: int,
+    prefetch_factor: int,
+    persistent_workers: bool,
+    use_amp: bool,
+    compile_model: bool,
+    accumulation_steps: int,
 ) -> Path:
     """Run ViT-only CV (within_subject or loso) and save results."""
     import numpy as np
@@ -171,7 +210,9 @@ def run_vit_cv(
 
                 def fwd(batch, _m=model):
                     x, labels = batch
-                    return _m(x.to(_device)), labels.to(_device)
+                    return _m(x.to(_device, non_blocking=True)), labels.to(
+                        _device, non_blocking=True
+                    )
 
                 trainer = Trainer(
                     model=model,
@@ -185,14 +226,25 @@ def run_vit_cv(
                     label_smoothing=0.1,
                     val_fraction=0.2,
                     seed=seed,
-                    num_workers=0,
+                    num_workers=num_workers,
+                    prefetch_factor=prefetch_factor,
+                    persistent_workers=persistent_workers,
+                    use_amp=use_amp,
+                    compile_model=compile_model,
+                    gradient_accumulation_steps=accumulation_steps,
                     backbone_lr_scale=0.1,
                 )
                 train_result = trainer.fit(
                     train_ds, forward_fn=fwd, model_tag=f"vit_within_f{fold_counter}"
                 )
                 test_loader = DataLoader(
-                    test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0
+                    test_ds,
+                    batch_size=batch_size * 2,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                    persistent_workers=persistent_workers if num_workers > 0 else False,
+                    pin_memory=_device.type == "cuda",
                 )
                 y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
                 m = compute_metrics(y[test_idx], y_pred, y_prob)
@@ -233,7 +285,7 @@ def run_vit_cv(
 
             def fwd(batch, _m=model):
                 x, labels = batch
-                return _m(x.to(_device)), labels.to(_device)
+                return _m(x.to(_device, non_blocking=True)), labels.to(_device, non_blocking=True)
 
             trainer = Trainer(
                 model=model,
@@ -247,12 +299,23 @@ def run_vit_cv(
                 label_smoothing=0.1,
                 val_fraction=0.2,
                 seed=seed,
-                num_workers=0,
+                num_workers=num_workers,
+                prefetch_factor=prefetch_factor,
+                persistent_workers=persistent_workers,
+                use_amp=use_amp,
+                compile_model=compile_model,
+                gradient_accumulation_steps=accumulation_steps,
                 backbone_lr_scale=0.1,
             )
             train_result = trainer.fit(train_ds, forward_fn=fwd, model_tag=f"vit_loso_f{fold_idx}")
             test_loader = DataLoader(
-                test_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0
+                test_ds,
+                batch_size=batch_size * 2,
+                shuffle=False,
+                num_workers=num_workers,
+                prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                persistent_workers=persistent_workers if num_workers > 0 else False,
+                pin_memory=_device.type == "cuda",
             )
             y_pred, y_prob = trainer.predict(test_loader, forward_fn=fwd)
             m = compute_metrics(test_y, y_pred, y_prob)
@@ -436,6 +499,12 @@ def main() -> None:
         device=str(device),
         seed=args.seed,
         log=log,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        persistent_workers=args.persistent_workers,
+        use_amp=args.amp,
+        compile_model=args.compile,
+        accumulation_steps=args.accumulation_steps,
     )
 
     # ── LOSO CV ───────────────────────────────────────────────────────────
@@ -453,6 +522,12 @@ def main() -> None:
         device=str(device),
         seed=args.seed,
         log=log,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        persistent_workers=args.persistent_workers,
+        use_amp=args.amp,
+        compile_model=args.compile,
+        accumulation_steps=args.accumulation_steps,
     )
 
     log.info("ViT baseline complete.")

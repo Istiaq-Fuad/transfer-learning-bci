@@ -15,9 +15,11 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable
+import typing
+from typing import Optional
 
 import numpy as np
 import torch
@@ -28,6 +30,10 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, random_split
 
 logger = logging.getLogger(__name__)
+
+
+def _dataset_len(dataset: Dataset) -> int:
+    return len(dataset)  # type: ignore[arg-type, call-overload]
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +129,15 @@ class Trainer:
         checkpoint_dir: str | Path | None = None,
         seed: int = 42,
         num_workers: int = 0,
+        prefetch_factor: int | None = None,
+        persistent_workers: bool = False,
+        use_amp: bool = False,
+        compile_model: bool = False,
+        gradient_accumulation_steps: int = 1,
         backbone_lr_scale: float | None = None,
         layer_lr_decay: float | None = None,
     ) -> None:
-        self.model = model
+        self.model: nn.Module = model
         self.device = torch.device(device)
         self.lr = learning_rate
         self.weight_decay = weight_decay
@@ -140,11 +151,22 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
         self.seed = seed
         self.num_workers = num_workers
+        self.prefetch_factor = prefetch_factor
+        self.persistent_workers = persistent_workers
+        self.use_amp = use_amp and self.device.type == "cuda"
+        self.compile_model = compile_model
+        self.gradient_accumulation_steps = max(1, int(gradient_accumulation_steps))
         self.backbone_lr_scale = backbone_lr_scale
         self.layer_lr_decay = layer_lr_decay
-
+        if self.compile_model and hasattr(torch, "compile"):
+            compiled_model = torch.compile(self.model)
+            self.model = typing.cast(nn.Module, compiled_model)
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        if self.use_amp:
+            self.scaler: Optional[torch.cuda.amp.GradScaler] = torch.cuda.amp.GradScaler()
+        else:
+            self.scaler = None
 
     def _make_optimizer_and_scheduler(self, total_epochs: int):
         # --- Layer-wise LR decay (finest granularity) -----------------------
@@ -228,7 +250,7 @@ class Trainer:
 
     def _split_dataset(self, dataset: Dataset) -> tuple[DataLoader, DataLoader]:
         """Split dataset into train and validation DataLoaders."""
-        n = len(dataset)  # type: ignore[arg-type]
+        n = _dataset_len(dataset)
         n_val = max(1, int(n * self.val_fraction))
         n_train = n - n_val
         generator = torch.Generator().manual_seed(self.seed)
@@ -240,6 +262,8 @@ class Trainer:
             drop_last=n_train > self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.device.type == "cuda",
+            persistent_workers=self.persistent_workers if self.num_workers > 0 else False,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
         )
         val_loader = DataLoader(
             val_ds,
@@ -247,6 +271,8 @@ class Trainer:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.device.type == "cuda",
+            persistent_workers=self.persistent_workers if self.num_workers > 0 else False,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
         )
         return train_loader, val_loader
 
@@ -260,18 +286,67 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         n = 0
-        for batch in loader:
-            optimizer.zero_grad()
-            logits, labels = forward_fn(batch)
-            loss = self.criterion(logits, labels)
-            loss.backward()
-            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            optimizer.step()
-            total_loss += loss.item() * len(labels)
+        n_batches = len(loader)
+        log_every = max(1, n_batches // 5)
+        t_epoch = time.time()
+        optimizer.zero_grad(set_to_none=True)
+        last_batch_idx = 0
+        for batch_idx, batch in enumerate(loader, start=1):
+            last_batch_idx = batch_idx
+            if self.use_amp:
+                with torch.cuda.amp.autocast():
+                    logits, labels = forward_fn(batch)
+                    loss = self.criterion(logits, labels)
+                unscaled_loss = loss
+                loss = loss / self.gradient_accumulation_steps
+                assert self.scaler is not None
+                self.scaler.scale(loss).backward()
+            else:
+                logits, labels = forward_fn(batch)
+                loss = self.criterion(logits, labels)
+                unscaled_loss = loss
+                loss = loss / self.gradient_accumulation_steps
+                loss.backward()
+
+            if batch_idx % self.gradient_accumulation_steps == 0:
+                if self.use_amp:
+                    assert self.scaler is not None
+                    self.scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                if self.use_amp:
+                    assert self.scaler is not None
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+            total_loss += unscaled_loss.item() * len(labels)
             n += len(labels)
+
+            if batch_idx == 1 or batch_idx % log_every == 0 or batch_idx == n_batches:
+                logger.info(
+                    "    batch %d/%d  loss=%.4f  (%.1fs elapsed)",
+                    batch_idx,
+                    n_batches,
+                    unscaled_loss.item(),
+                    time.time() - t_epoch,
+                )
+        if last_batch_idx and last_batch_idx % self.gradient_accumulation_steps != 0:
+            if self.use_amp:
+                assert self.scaler is not None
+                self.scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            if self.use_amp:
+                assert self.scaler is not None
+                self.scaler.step(optimizer)
+                self.scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
         return total_loss / max(n, 1)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _evaluate(
         self,
         loader: DataLoader,
@@ -288,15 +363,32 @@ class Trainer:
         all_preds: list[np.ndarray] = []
         all_labels: list[np.ndarray] = []
 
-        for batch in loader:
-            logits, labels = forward_fn(batch)
-            loss = self.criterion(logits, labels)
+        n_batches = len(loader)
+        log_every = max(1, n_batches // 5)
+        t_eval = time.time()
+        for batch_idx, batch in enumerate(loader, start=1):
+            if self.use_amp:
+                with torch.cuda.amp.autocast():
+                    logits, labels = forward_fn(batch)
+                    loss = self.criterion(logits, labels)
+            else:
+                logits, labels = forward_fn(batch)
+                loss = self.criterion(logits, labels)
             total_loss += loss.item() * len(labels)
             n += len(labels)
 
             preds = logits.argmax(dim=-1).cpu().numpy()
             all_preds.append(preds)
             all_labels.append(labels.cpu().numpy())
+
+            if batch_idx == 1 or batch_idx % log_every == 0 or batch_idx == n_batches:
+                logger.info(
+                    "    eval batch %d/%d  loss=%.4f  (%.1fs elapsed)",
+                    batch_idx,
+                    n_batches,
+                    loss.item(),
+                    time.time() - t_eval,
+                )
 
         y_pred = np.concatenate(all_preds)
         y_true = np.concatenate(all_labels)
@@ -332,15 +424,16 @@ class Trainer:
         """
         if forward_fn is None:
 
-            def forward_fn(batch):
+            def default_forward_fn(batch):
                 inputs, labels = batch
-                inputs = inputs.to(self.device)
-                labels = labels.to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
                 return self.model(inputs), labels
 
+            forward_fn = default_forward_fn
+
         if val_dataset is not None:
-            n_train = len(dataset)  # type: ignore[arg-type]
-            _persist = self.num_workers > 0
+            n_train = _dataset_len(dataset)
             train_loader = DataLoader(
                 dataset,
                 batch_size=self.batch_size,
@@ -348,8 +441,8 @@ class Trainer:
                 drop_last=n_train > self.batch_size,
                 num_workers=self.num_workers,
                 pin_memory=self.device.type == "cuda",
-                persistent_workers=_persist,
-                prefetch_factor=2 if _persist else None,
+                persistent_workers=self.persistent_workers if self.num_workers > 0 else False,
+                prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
             )
             val_loader = DataLoader(
                 val_dataset,
@@ -357,8 +450,8 @@ class Trainer:
                 shuffle=False,
                 num_workers=self.num_workers,
                 pin_memory=self.device.type == "cuda",
-                persistent_workers=_persist,
-                prefetch_factor=2 if _persist else None,
+                persistent_workers=self.persistent_workers if self.num_workers > 0 else False,
+                prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
             )
         else:
             train_loader, val_loader = self._split_dataset(dataset)
@@ -377,12 +470,20 @@ class Trainer:
             self.epochs,
             self.lr,
             self.batch_size,
-            len(train_loader.dataset),  # type: ignore[arg-type]
-            len(val_loader.dataset),  # type: ignore[arg-type]
+            _dataset_len(train_loader.dataset),
+            _dataset_len(val_loader.dataset),
+        )
+        logger.info(
+            "  DataLoader: num_workers=%d prefetch=%s persistent=%s pin_memory=%s",
+            self.num_workers,
+            self.prefetch_factor,
+            self.persistent_workers,
+            self.device.type == "cuda",
         )
 
         t_start = time.time()
         for epoch in range(1, self.epochs + 1):
+            logger.info("  Epoch %d/%d: loading first batch...", epoch, self.epochs)
             train_loss = self._train_one_epoch(train_loader, optimizer, forward_fn)
             val_loss, val_acc, val_kappa = self._evaluate(val_loader, forward_fn)
             current_lr = optimizer.param_groups[0]["lr"]
@@ -420,7 +521,12 @@ class Trainer:
                 if self.checkpoint_dir is not None:
                     self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
                     ckpt_path = self.checkpoint_dir / f"{model_tag}_best.pt"
-                    torch.save(self.model.state_dict(), ckpt_path)
+                    model_to_save = self.model
+                    if self.compile_model:
+                        orig_mod = getattr(self.model, "_orig_mod", None)
+                        if isinstance(orig_mod, nn.Module):
+                            model_to_save = orig_mod
+                    torch.save(model_to_save.state_dict(), ckpt_path)
                     best_ckpt_path = str(ckpt_path)
             else:
                 patience_counter += 1
@@ -450,7 +556,7 @@ class Trainer:
             best_checkpoint_path=best_ckpt_path,
         )
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict(
         self,
         loader: DataLoader,
@@ -467,11 +573,13 @@ class Trainer:
         """
         if forward_fn is None:
 
-            def forward_fn(batch):
+            def default_forward_fn(batch):
                 inputs, labels = batch
-                inputs = inputs.to(self.device)
-                labels = labels.to(self.device)
+                inputs = inputs.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
                 return self.model(inputs), labels
+
+            forward_fn = default_forward_fn
 
         self.model.eval()
         all_probs: list[np.ndarray] = []

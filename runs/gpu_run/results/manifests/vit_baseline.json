@@ -1,0 +1,9 @@
+{
+  "stage": "vit_baseline",
+  "outputs": {
+    "within_subject": "runs/gpu_run/results/real_baseline_c_vit.json"
+  },
+  "meta": {
+    "strategy": "within_subject"
+  }
+}

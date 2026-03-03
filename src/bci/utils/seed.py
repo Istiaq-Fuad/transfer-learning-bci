@@ -23,9 +23,9 @@ def set_seed(seed: int = 42) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # For deterministic behavior (may reduce performance)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # Favor speed over bitwise determinism for fixed-size inputs.
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
     os.environ["PYTHONHASHSEED"] = str(seed)
     logger.info("Random seed set to %d", seed)

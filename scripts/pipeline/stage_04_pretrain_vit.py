@@ -50,6 +50,12 @@ def pretrain_vit(
     ft_lr: float = 3e-5,
     layer_lr_decay: float = 0.65,
     ft_weight_decay: float = 0.05,
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = False,
+    use_amp: bool = False,
+    compile_model: bool = False,
+    accumulation_steps: int = 1,
 ) -> dict:
     """Pretrain a ViT backbone on spectrogram images built from raw EEG data.
 
@@ -111,6 +117,18 @@ def pretrain_vit(
         Layer-wise LR decay factor for the FT phase.
     ft_weight_decay:
         Weight decay for the FT phase.
+    num_workers:
+        DataLoader worker processes (0 = main process).
+    prefetch_factor:
+        Batches prefetched per worker when num_workers > 0.
+    persistent_workers:
+        Whether to keep DataLoader workers alive between epochs.
+    use_amp:
+        Enable automatic mixed precision during training on CUDA.
+    compile_model:
+        Enable torch.compile for the model (PyTorch 2.0+).
+    accumulation_steps:
+        Number of gradient accumulation steps.
 
     Returns
     -------
@@ -174,7 +192,7 @@ def pretrain_vit(
 
     def fwd(batch, _m=model):
         imgs, labels = batch
-        return _m(imgs.to(_device)), labels.to(_device)
+        return _m(imgs.to(_device, non_blocking=True)), labels.to(_device, non_blocking=True)
 
     lp_result = None  # type: ignore[assignment]
     if lp_epochs > 0:
@@ -192,7 +210,12 @@ def pretrain_vit(
             patience=lp_epochs,
             label_smoothing=0.1,
             seed=seed,
-            num_workers=0,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            use_amp=use_amp,
+            compile_model=compile_model,
+            gradient_accumulation_steps=accumulation_steps,
         )
         trainer_lp.fit(
             train_ds,
@@ -214,7 +237,12 @@ def pretrain_vit(
             patience=patience,
             label_smoothing=0.1,
             seed=seed,
-            num_workers=0,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            use_amp=use_amp,
+            compile_model=compile_model,
+            gradient_accumulation_steps=accumulation_steps,
             layer_lr_decay=layer_lr_decay,
         )
         final_trainer.fit(
@@ -236,7 +264,12 @@ def pretrain_vit(
             patience=patience,
             label_smoothing=0.1,
             seed=seed,
-            num_workers=0,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            use_amp=use_amp,
+            compile_model=compile_model,
+            gradient_accumulation_steps=accumulation_steps,
         )
         final_trainer.fit(
             train_ds,
@@ -246,7 +279,15 @@ def pretrain_vit(
         )
 
     # Validation
-    val_loader = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False, num_workers=0)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=persistent_workers if num_workers > 0 else False,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        pin_memory=_device.type == "cuda",
+    )
     y_pred, y_prob = final_trainer.predict(val_loader, forward_fn=fwd)
     metrics = compute_metrics(y_all[n_train:], y_pred, y_prob)
 
@@ -281,6 +322,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="auto")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader worker processes (0 = main process)",
+    )
+    p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per worker when num_workers > 0",
+    )
+    p.add_argument(
+        "--persistent-workers",
+        action="store_true",
+        help="Keep DataLoader workers alive between epochs",
+    )
+    p.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable automatic mixed precision on CUDA",
+    )
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable torch.compile for the model (PyTorch 2.0+)",
+    )
+    p.add_argument(
+        "--accumulation-steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps",
+    )
     p.add_argument(
         "--lr", type=float, default=1e-4, help="(Legacy) uniform LR — only used when --lp-epochs=0"
     )
@@ -466,8 +540,8 @@ def main() -> None:
         Images are resized from the on-disk size (224×224) to TARGET_IMG_SIZE
         (64×64) at load time, keeping VRAM usage and forward-pass time low.
 
-        NOTE: num_workers must be 0 — the LRU OrderedDict is not fork-safe
-        and will deadlock if passed to multiprocessing DataLoader workers.
+        NOTE: this dataset is safe with num_workers>0 because it does not
+        share mutable state across workers (each worker has its own cache).
         """
 
         def __init__(
@@ -499,7 +573,7 @@ def main() -> None:
                 return self._cache[file_idx]
             spec_path = self._subject_info[file_idx][0]
             with np.load(spec_path) as data:
-                images = data["images"].astype(np.float32)  # (N, 9, H, W)
+                images = data["images"].astype(np.float32, copy=False)  # (N, 9, H, W)
             # Resize from on-disk size to target size using bilinear interpolation.
             # torch.nn.functional.interpolate is the fastest option for batched
             # (N, C, H, W) float32 arrays without requiring an extra import.
@@ -535,6 +609,7 @@ def main() -> None:
             label = torch.tensor(int(self._y_all[global_idx]), dtype=torch.long)
             return img, label
 
+    cache_size = len(subject_info)
     train_ds = _LazySpectrogramDataset(
         perm[:n_train],
         trial_map,
@@ -542,7 +617,7 @@ def main() -> None:
         y_all,
         mean,
         std,
-        cache_size=8,
+        cache_size=cache_size,
     )
     val_ds = _LazySpectrogramDataset(
         perm[n_train:],
@@ -551,7 +626,7 @@ def main() -> None:
         y_all,
         mean,
         std,
-        cache_size=8,
+        cache_size=cache_size,
     )
 
     # ── Model ──────────────────────────────────────────────────────────────
@@ -570,7 +645,7 @@ def main() -> None:
 
     def fwd(batch, _m=model):
         imgs, labels = batch
-        return _m(imgs.to(device)), labels.to(device)
+        return _m(imgs.to(device, non_blocking=True)), labels.to(device, non_blocking=True)
 
     t0 = time.time()
     use_lpft = args.lp_epochs > 0
@@ -604,7 +679,12 @@ def main() -> None:
             patience=args.lp_epochs,  # never early-stop during LP
             label_smoothing=0.1,
             seed=args.seed,
-            num_workers=0,  # _LazySpectrogramDataset is not fork-safe
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
+            persistent_workers=args.persistent_workers,
+            use_amp=args.amp,
+            compile_model=args.compile,
+            gradient_accumulation_steps=args.accumulation_steps,
         )
         lp_result = trainer_lp.fit(
             train_ds,
@@ -649,7 +729,12 @@ def main() -> None:
             patience=args.patience,
             label_smoothing=0.1,
             seed=args.seed,
-            num_workers=0,  # _LazySpectrogramDataset is not fork-safe
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
+            persistent_workers=args.persistent_workers,
+            use_amp=args.amp,
+            compile_model=args.compile,
+            gradient_accumulation_steps=args.accumulation_steps,
             layer_lr_decay=args.layer_lr_decay,
         )
         ft_result = trainer_ft.fit(
@@ -695,7 +780,12 @@ def main() -> None:
             patience=args.patience,
             label_smoothing=0.1,
             seed=args.seed,
-            num_workers=0,  # _LazySpectrogramDataset is not fork-safe
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
+            persistent_workers=args.persistent_workers,
+            use_amp=args.amp,
+            compile_model=args.compile,
+            gradient_accumulation_steps=args.accumulation_steps,
         )
         train_result = trainer.fit(
             train_ds,
@@ -711,7 +801,15 @@ def main() -> None:
     log.info("Pretraining done in %.1fs", elapsed)
 
     # Validation metrics
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size * 2, shuffle=False, num_workers=0)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size * 2,
+        shuffle=False,
+        num_workers=args.num_workers,
+        persistent_workers=args.persistent_workers if args.num_workers > 0 else False,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        pin_memory=device_str == "cuda",
+    )
     y_pred, y_prob = final_trainer.predict(val_loader, forward_fn=fwd)
     metrics = compute_metrics(y_all[perm[n_train:]], y_pred, y_prob)
     log.info("Pretrain val: %.2f%%  kappa=%.3f", metrics["accuracy"], metrics["kappa"])
